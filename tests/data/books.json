@@ -1,0 +1,23 @@
+{
+  "schema_version": "1.0",
+  "default_book": "elliptic-pde-second-order",
+  "books": [
+    {
+      "id": "elliptic-pde-second-order",
+      "title": "Elliptic partial differential equations of second order",
+      "path": "books/elliptic-pde-second-order.pdf",
+      "source_filename": "Elliptic partial differential equations of second order.pdf",
+      "sha256": "2e52689220538bcc2dc05f68794ee35d3c4715dfd29bd80fb46aedbac7aa06a0",
+      "size_bytes": 21026129,
+      "scope": "full_book"
+    },
+    {
+      "id": "wang-2022-g-invariant-min-max",
+      "title": "Wang (2022) - Min-max theory for G-invariant minimal hypersurfaces",
+      "path": "papers/wang-2022-g-invariant-min-max.pdf",
+      "sha256": "6b92a9fa7f4dc36af1ca7a2e1da0e4842ffdc4b3ed1d9fc276b90cfbb905225b",
+      "page_count": 45,
+      "size_bytes": 568811
+    }
+  ]
+}

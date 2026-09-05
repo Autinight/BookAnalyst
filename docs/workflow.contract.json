@@ -1,0 +1,1356 @@
+{
+  "schema_version": "0.4",
+  "status": "prototype_executor_implemented_partial_contract_coverage",
+  "stage_order": [
+    "S0",
+    "S1",
+    "S2",
+    "S3",
+    "S4",
+    "S5",
+    "S6",
+    "S7",
+    "S8"
+  ],
+  "stages": [
+    {
+      "id": "S0",
+      "name": "登记与预算冻结",
+      "inputs": [
+        "source.pdf",
+        "run_config"
+      ],
+      "outputs": [
+        "run.json",
+        "source.json"
+      ],
+      "gates": [
+        "G00"
+      ],
+      "orchestrator": "PROGRAM",
+      "artifact_committer": "PROGRAM",
+      "participants": [
+        "PROGRAM"
+      ],
+      "steps": [
+        {
+          "id": "S0.1",
+          "actors_in_order": [
+            "PROGRAM"
+          ],
+          "handoff_owner": "PROGRAM"
+        },
+        {
+          "id": "S0.2",
+          "actors_in_order": [
+            "PROGRAM"
+          ],
+          "handoff_owner": "PROGRAM"
+        },
+        {
+          "id": "S0.3",
+          "actors_in_order": [
+            "PROGRAM"
+          ],
+          "handoff_owner": "PROGRAM"
+        },
+        {
+          "id": "S0.4",
+          "actors_in_order": [
+            "PROGRAM"
+          ],
+          "handoff_owner": "PROGRAM"
+        }
+      ]
+    },
+    {
+      "id": "S1",
+      "name": "粗分块与解析",
+      "inputs": [
+        "run.json",
+        "source.json"
+      ],
+      "outputs": [
+        "chunks.json",
+        "raw/index.json"
+      ],
+      "gates": [
+        "G10",
+        "G11"
+      ],
+      "orchestrator": "PROGRAM",
+      "artifact_committer": "PROGRAM",
+      "participants": [
+        "PROGRAM",
+        "MINERU"
+      ],
+      "steps": [
+        {
+          "id": "S1.1",
+          "actors_in_order": [
+            "PROGRAM"
+          ],
+          "handoff_owner": "PROGRAM"
+        },
+        {
+          "id": "S1.2",
+          "actors_in_order": [
+            "PROGRAM"
+          ],
+          "handoff_owner": "PROGRAM"
+        },
+        {
+          "id": "S1.3",
+          "actors_in_order": [
+            "PROGRAM",
+            "MINERU",
+            "PROGRAM"
+          ],
+          "handoff_owner": "PROGRAM"
+        },
+        {
+          "id": "S1.4",
+          "actors_in_order": [
+            "PROGRAM"
+          ],
+          "handoff_owner": "PROGRAM"
+        },
+        {
+          "id": "S1.5",
+          "actors_in_order": [
+            "PROGRAM"
+          ],
+          "handoff_owner": "PROGRAM"
+        }
+      ]
+    },
+    {
+      "id": "S2",
+      "name": "归一化与覆盖核验",
+      "inputs": [
+        "chunks.json",
+        "raw/index.json",
+        "source.pdf",
+        "source.json"
+      ],
+      "outputs": [
+        "content.json",
+        "source_map.json",
+        "dispositions.json",
+        "visual_review/plan.json",
+        "visual_review/index.json",
+        "type_inventory.json",
+        "type_policy.json"
+      ],
+      "gates": [
+        "G20",
+        "G21",
+        "G22"
+      ],
+      "orchestrator": "PROGRAM",
+      "artifact_committer": "PROGRAM",
+      "participants": [
+        "PROGRAM",
+        "LLM_ANALYST",
+        "LLM_VISUAL_REVIEWER"
+      ],
+      "steps": [
+        {
+          "id": "S2.1",
+          "actors_in_order": [
+            "PROGRAM"
+          ],
+          "handoff_owner": "PROGRAM"
+        },
+        {
+          "id": "S2.2",
+          "actors_in_order": [
+            "PROGRAM"
+          ],
+          "handoff_owner": "PROGRAM"
+        },
+        {
+          "id": "S2.3",
+          "actors_in_order": [
+            "PROGRAM",
+            "LLM_ANALYST",
+            "PROGRAM"
+          ],
+          "handoff_owner": "PROGRAM",
+          "llm_call_condition": "当前类型清单和模型没有可复用的类型策略时，仅调用一次",
+          "description": "程序列出全部 box type 与数量；LLM 为每种 type 决定 KEEP 或 EXCLUDE；程序校验完整覆盖并统一应用。禁止逐块页眉、页码分类。未知类型保守保留。"
+        },
+        {
+          "id": "S2.4",
+          "actors_in_order": [
+            "PROGRAM"
+          ],
+          "handoff_owner": "PROGRAM",
+          "description": "保存解析分块边界与来源顺序；语义续接由 S3 分析和审查"
+        },
+        {
+          "id": "S2.5",
+          "actors_in_order": [
+            "PROGRAM"
+          ],
+          "handoff_owner": "PROGRAM"
+        },
+        {
+          "id": "S2.6",
+          "actors_in_order": [
+            "PROGRAM",
+            "LLM_VISUAL_REVIEWER",
+            "PROGRAM",
+            "LLM_VISUAL_REVIEWER",
+            "PROGRAM"
+          ],
+          "handoff_owner": "PROGRAM",
+          "llm_call_condition": "visual_review 已启用且冻结计划包含待核对目标"
+        }
+      ]
+    },
+    {
+      "id": "S3",
+      "name": "目录锚定与语义结构",
+      "inputs": [
+        "content.json",
+        "source_map.json",
+        "visual_review/index.json"
+      ],
+      "outputs": [
+        "toc.json",
+        "structure.json",
+        "number_observations.json"
+      ],
+      "gates": [
+        "G30",
+        "G31"
+      ],
+      "orchestrator": "PROGRAM",
+      "artifact_committer": "PROGRAM",
+      "participants": [
+        "PROGRAM",
+        "LLM_ANALYST",
+        "LLM_REVIEWER"
+      ],
+      "steps": [
+        {
+          "id": "S3.1",
+          "actors_in_order": [
+            "PROGRAM",
+            "LLM_ANALYST",
+            "LLM_REVIEWER",
+            "PROGRAM"
+          ],
+          "handoff_owner": "PROGRAM",
+          "llm_call_condition": "目录条目需要语义重组"
+        },
+        {
+          "id": "S3.2",
+          "actors_in_order": [
+            "PROGRAM"
+          ],
+          "handoff_owner": "PROGRAM"
+        },
+        {
+          "id": "S3.3",
+          "actors_in_order": [
+            "LLM_ANALYST",
+            "LLM_REVIEWER",
+            "PROGRAM"
+          ],
+          "handoff_owner": "PROGRAM",
+          "llm_call_condition": "精确匹配产生冲突或缺项"
+        },
+        {
+          "id": "S3.4",
+          "actors_in_order": [
+            "LLM_ANALYST",
+            "LLM_REVIEWER",
+            "PROGRAM"
+          ],
+          "handoff_owner": "PROGRAM"
+        },
+        {
+          "id": "S3.5",
+          "actors_in_order": [
+            "LLM_ANALYST",
+            "LLM_REVIEWER",
+            "PROGRAM"
+          ],
+          "handoff_owner": "PROGRAM"
+        },
+        {
+          "id": "S3.6",
+          "actors_in_order": [
+            "LLM_ANALYST",
+            "LLM_REVIEWER",
+            "PROGRAM"
+          ],
+          "handoff_owner": "PROGRAM",
+          "llm_call_condition": "原书缺少可用目录"
+        }
+      ]
+    },
+    {
+      "id": "S4",
+      "name": "全书规则冻结",
+      "inputs": [
+        "toc.json",
+        "structure.json",
+        "number_observations.json",
+        "visual_review/index.json"
+      ],
+      "outputs": [
+        "book_profile.json",
+        "numbering_ledger.json",
+        "reference_registry.json"
+      ],
+      "gates": [
+        "G40",
+        "G41"
+      ],
+      "orchestrator": "PROGRAM",
+      "artifact_committer": "PROGRAM",
+      "participants": [
+        "PROGRAM",
+        "LLM_ANALYST",
+        "LLM_REVIEWER"
+      ],
+      "steps": [
+        {
+          "id": "S4.1",
+          "actors_in_order": [
+            "PROGRAM"
+          ],
+          "handoff_owner": "PROGRAM"
+        },
+        {
+          "id": "S4.2",
+          "actors_in_order": [
+            "LLM_ANALYST",
+            "LLM_REVIEWER",
+            "PROGRAM"
+          ],
+          "handoff_owner": "PROGRAM"
+        },
+        {
+          "id": "S4.3",
+          "actors_in_order": [
+            "PROGRAM"
+          ],
+          "handoff_owner": "PROGRAM"
+        },
+        {
+          "id": "S4.4",
+          "actors_in_order": [
+            "PROGRAM"
+          ],
+          "handoff_owner": "PROGRAM"
+        },
+        {
+          "id": "S4.5",
+          "actors_in_order": [
+            "LLM_ANALYST",
+            "LLM_REVIEWER",
+            "PROGRAM"
+          ],
+          "handoff_owner": "PROGRAM",
+          "llm_call_condition": "计数器模拟发现作者特殊编号候选"
+        },
+        {
+          "id": "S4.6",
+          "actors_in_order": [
+            "PROGRAM",
+            "LLM_ANALYST",
+            "LLM_REVIEWER",
+            "PROGRAM"
+          ],
+          "handoff_owner": "PROGRAM",
+          "llm_call_condition": "引用不能由已确认对象标识唯一匹配"
+        },
+        {
+          "id": "S4.7",
+          "actors_in_order": [
+            "PROGRAM"
+          ],
+          "handoff_owner": "PROGRAM"
+        }
+      ]
+    },
+    {
+      "id": "S5",
+      "name": "任务规划",
+      "inputs": [
+        "content.json",
+        "structure.json",
+        "book_profile.json",
+        "reference_registry.json"
+      ],
+      "outputs": [
+        "tasks.json"
+      ],
+      "gates": [
+        "G50",
+        "G51"
+      ],
+      "orchestrator": "PROGRAM",
+      "artifact_committer": "PROGRAM",
+      "participants": [
+        "PROGRAM",
+        "LLM_ANALYST",
+        "LLM_REVIEWER"
+      ],
+      "steps": [
+        {
+          "id": "S5.1",
+          "actors_in_order": [
+            "PROGRAM"
+          ],
+          "handoff_owner": "PROGRAM"
+        },
+        {
+          "id": "S5.2",
+          "actors_in_order": [
+            "PROGRAM"
+          ],
+          "handoff_owner": "PROGRAM"
+        },
+        {
+          "id": "S5.3",
+          "actors_in_order": [
+            "PROGRAM",
+            "LLM_ANALYST",
+            "LLM_REVIEWER",
+            "PROGRAM"
+          ],
+          "handoff_owner": "PROGRAM",
+          "llm_call_condition": "超预算且已标注的段落／公式边界不足以确定合法拆分"
+        },
+        {
+          "id": "S5.4",
+          "actors_in_order": [
+            "PROGRAM"
+          ],
+          "handoff_owner": "PROGRAM"
+        },
+        {
+          "id": "S5.5",
+          "actors_in_order": [
+            "PROGRAM"
+          ],
+          "handoff_owner": "PROGRAM"
+        }
+      ]
+    },
+    {
+      "id": "S6",
+      "name": "并行转换与逐块审查",
+      "inputs": [
+        "tasks.json",
+        "content.json",
+        "book_profile.json",
+        "visual_review/index.json"
+      ],
+      "outputs": [
+        "fragments/index.json",
+        "reviews/index.json"
+      ],
+      "gates": [
+        "G60",
+        "G61",
+        "G62"
+      ],
+      "orchestrator": "PROGRAM",
+      "artifact_committer": "PROGRAM",
+      "participants": [
+        "PROGRAM",
+        "LLM_CONVERTER",
+        "LLM_REVIEWER",
+        "LLM_ANALYST"
+      ],
+      "steps": [
+        {
+          "id": "S6.1",
+          "actors_in_order": [
+            "PROGRAM"
+          ],
+          "handoff_owner": "PROGRAM"
+        },
+        {
+          "id": "S6.2",
+          "actors_in_order": [
+            "LLM_CONVERTER"
+          ],
+          "handoff_owner": "PROGRAM"
+        },
+        {
+          "id": "S6.3",
+          "actors_in_order": [
+            "PROGRAM"
+          ],
+          "handoff_owner": "PROGRAM"
+        },
+        {
+          "id": "S6.4",
+          "actors_in_order": [
+            "PROGRAM"
+          ],
+          "handoff_owner": "PROGRAM"
+        },
+        {
+          "id": "S6.5",
+          "actors_in_order": [
+            "LLM_REVIEWER"
+          ],
+          "handoff_owner": "PROGRAM"
+        },
+        {
+          "id": "S6.6",
+          "actors_in_order": [
+            "LLM_REVIEWER",
+            "PROGRAM"
+          ],
+          "handoff_owner": "PROGRAM"
+        },
+        {
+          "id": "S6.7",
+          "actors_in_order": [
+            "PROGRAM",
+            "LLM_CONVERTER",
+            "PROGRAM",
+            "LLM_REVIEWER",
+            "PROGRAM"
+          ],
+          "handoff_owner": "PROGRAM",
+          "llm_call_condition": "独立审查发现可修正问题且预算允许"
+        },
+        {
+          "id": "S6.8",
+          "actors_in_order": [
+            "PROGRAM",
+            "LLM_ANALYST",
+            "LLM_REVIEWER",
+            "PROGRAM"
+          ],
+          "handoff_owner": "PROGRAM",
+          "llm_call_condition": "模型错误需语义诊断或发现疑似 OCR 错误"
+        },
+        {
+          "id": "S6.9",
+          "actors_in_order": [
+            "PROGRAM"
+          ],
+          "handoff_owner": "PROGRAM"
+        }
+      ]
+    },
+    {
+      "id": "S7",
+      "name": "确定性合并与编译",
+      "inputs": [
+        "structure.json",
+        "book_profile.json",
+        "numbering_ledger.json",
+        "reference_registry.json",
+        "fragments/index.json",
+        "reviews/index.json"
+      ],
+      "outputs": [
+        "tex/main.tex",
+        "tex/preamble.tex",
+        "tex/body.tex",
+        "tex/source_map.json",
+        "compile_report.json"
+      ],
+      "gates": [
+        "G70",
+        "G71"
+      ],
+      "orchestrator": "PROGRAM",
+      "artifact_committer": "PROGRAM",
+      "participants": [
+        "PROGRAM"
+      ],
+      "steps": [
+        {
+          "id": "S7.1",
+          "actors_in_order": [
+            "PROGRAM"
+          ],
+          "handoff_owner": "PROGRAM"
+        },
+        {
+          "id": "S7.2",
+          "actors_in_order": [
+            "PROGRAM"
+          ],
+          "handoff_owner": "PROGRAM"
+        },
+        {
+          "id": "S7.3",
+          "actors_in_order": [
+            "PROGRAM"
+          ],
+          "handoff_owner": "PROGRAM"
+        },
+        {
+          "id": "S7.4",
+          "actors_in_order": [
+            "PROGRAM"
+          ],
+          "handoff_owner": "PROGRAM"
+        },
+        {
+          "id": "S7.5",
+          "actors_in_order": [
+            "PROGRAM"
+          ],
+          "handoff_owner": "PROGRAM"
+        },
+        {
+          "id": "S7.6",
+          "actors_in_order": [
+            "PROGRAM"
+          ],
+          "handoff_owner": "PROGRAM"
+        },
+        {
+          "id": "S7.7",
+          "actors_in_order": [
+            "PROGRAM"
+          ],
+          "handoff_owner": "PROGRAM"
+        }
+      ]
+    },
+    {
+      "id": "S8",
+      "name": "范围核验与交付",
+      "inputs": [
+        "run.json",
+        "source.json",
+        "source_map.json",
+        "dispositions.json",
+        "reviews/index.json",
+        "compile_report.json",
+        "tex/source_map.json",
+        "visual_review/index.json"
+      ],
+      "outputs": [
+        "audit.json",
+        "result_manifest.json"
+      ],
+      "gates": [
+        "G80"
+      ],
+      "orchestrator": "PROGRAM",
+      "artifact_committer": "PROGRAM",
+      "participants": [
+        "PROGRAM"
+      ],
+      "steps": [
+        {
+          "id": "S8.1",
+          "actors_in_order": [
+            "PROGRAM"
+          ],
+          "handoff_owner": "PROGRAM"
+        },
+        {
+          "id": "S8.2",
+          "actors_in_order": [
+            "PROGRAM"
+          ],
+          "handoff_owner": "PROGRAM"
+        },
+        {
+          "id": "S8.3",
+          "actors_in_order": [
+            "PROGRAM"
+          ],
+          "handoff_owner": "PROGRAM"
+        },
+        {
+          "id": "S8.4",
+          "actors_in_order": [
+            "PROGRAM"
+          ],
+          "handoff_owner": "PROGRAM"
+        }
+      ]
+    }
+  ],
+  "gates": {
+    "G00": "源文件可读；范围、服务能力与预算完整；凭据以引用传入。 启用图像核对时，模型和适配器的图像能力及预算已确认。",
+    "G10": "目标物理页索引恰好覆盖一次；每份实际上传文件均在页数和字节上限内。",
+    "G11": "每块解析成功且资源完整；解析返回页数与请求一致；未知结果不可视为成功。",
+    "G20": "所有原始内容块有去向记录；保留原子及来源 ID 唯一。",
+    "G21": "来源顺序和边界映射完整，排除决定有明确依据；未知项可保守保留，后续结构与原图核对仍须执行。",
+    "G30": "目录条目与正文标题匹配唯一且顺序、层级一致，全部冲突有处理记录。",
+    "G31": "每个正文原子属于唯一语义叶节点；证据原子有去向；环境边界和编号观察有关联来源。",
+    "G40": "所有编号观察可由计数器模拟或有证据的例外复现；歧义已解决。",
+    "G41": "全书配置已冻结并产生哈希；标签唯一；引用已解析或明确登记为外部引用。",
+    "G50": "任务所有权无交集且并集等于正文原子全集；共享上下文不可输出。",
+    "G51": "每个生成与审查请求均满足模型输入输出预算；续接边有唯一归属。",
+    "G60": "片段严格符合输出契约，来源与版本匹配；无未登记宏、环境或布局命令。",
+    "G61": "原文和公式变更均可解释；独立审查无未解决阻断项。",
+    "G62": "所有任务及相邻边界审查通过；不存在过期、失败或缺失片段。",
+    "G70": "合并顺序、内容覆盖、标题树、编号和引用均符合冻结配置。",
+    "G71": "编译成功且无未定义命令、未解析引用、重复标签或未解决重编译要求。",
+    "G80": "阶段通过且产物哈希完整；测试范围与内容核验范围如实声明。",
+    "G22": "视觉计划中的目标已核对；原图证据、内容修订与报告匹配，差异已处理；空目标或局部核对不冒充整页／整书核对。"
+  },
+  "phase_states": [
+    "PENDING",
+    "RUNNING",
+    "PASSED",
+    "RETRY_WAIT",
+    "NEEDS_REVIEW",
+    "FAILED",
+    "STALE"
+  ],
+  "phase_transitions": {
+    "PENDING": [
+      "RUNNING",
+      "STALE"
+    ],
+    "RUNNING": [
+      "PASSED",
+      "RETRY_WAIT",
+      "NEEDS_REVIEW",
+      "FAILED",
+      "STALE"
+    ],
+    "RETRY_WAIT": [
+      "RUNNING",
+      "FAILED",
+      "STALE"
+    ],
+    "NEEDS_REVIEW": [
+      "PENDING",
+      "FAILED",
+      "STALE"
+    ],
+    "FAILED": [
+      "PENDING",
+      "STALE"
+    ],
+    "PASSED": [
+      "STALE"
+    ],
+    "STALE": [
+      "PENDING"
+    ]
+  },
+  "task_states": [
+    "PENDING",
+    "RUNNING",
+    "CANDIDATE",
+    "CHECKING",
+    "REPAIR_PENDING",
+    "PASSED",
+    "RETRY_WAIT",
+    "NEEDS_REVIEW",
+    "FAILED",
+    "STALE"
+  ],
+  "task_transitions": {
+    "PENDING": [
+      "RUNNING",
+      "STALE"
+    ],
+    "RUNNING": [
+      "CANDIDATE",
+      "RETRY_WAIT",
+      "FAILED",
+      "STALE",
+      "NEEDS_REVIEW"
+    ],
+    "CANDIDATE": [
+      "CHECKING",
+      "STALE"
+    ],
+    "CHECKING": [
+      "PASSED",
+      "REPAIR_PENDING",
+      "NEEDS_REVIEW",
+      "STALE"
+    ],
+    "REPAIR_PENDING": [
+      "RUNNING",
+      "NEEDS_REVIEW",
+      "STALE"
+    ],
+    "RETRY_WAIT": [
+      "RUNNING",
+      "FAILED",
+      "STALE"
+    ],
+    "PASSED": [
+      "STALE"
+    ],
+    "STALE": [
+      "PENDING"
+    ],
+    "NEEDS_REVIEW": [
+      "PENDING",
+      "FAILED",
+      "STALE"
+    ],
+    "FAILED": [
+      "PENDING",
+      "STALE"
+    ]
+  },
+  "defaults": {
+    "llm_concurrency": 2,
+    "mineru_concurrency": 1,
+    "transport_retries": 1,
+    "repair_rounds": 2,
+    "llm_timeout_seconds": 180,
+    "parse_task_timeout_seconds": 600,
+    "poll_interval_seconds": 5,
+    "poll_max_requests": 120,
+    "compile_max_passes": 3,
+    "max_llm_requests": 8
+  },
+  "execution_profiles": {
+    "cloud_smoke": {
+      "scope": "sample",
+      "source_pages_max": 3,
+      "max_parse_submissions": 1,
+      "max_submitted_pages": 3,
+      "allowed_terminal_stage": "S1",
+      "llm_enabled": false,
+      "required_passed_stages": [
+        "S0",
+        "S1"
+      ],
+      "partial_stage_checks": {
+        "stage": "S2",
+        "actor": "PROGRAM",
+        "output": "s2_checks.json",
+        "checks": [
+          "json_structure",
+          "resource_integrity",
+          "id_uniqueness",
+          "source_mapping"
+        ],
+        "semantic_checks": false,
+        "mark_passed": false,
+        "phase_state": "PENDING"
+      },
+      "visual_review_enabled": false
+    },
+    "local_smoke": {
+      "scope": "sample",
+      "source_pages_max": 1,
+      "max_parse_submissions": 1,
+      "max_submitted_pages": 1,
+      "allowed_terminal_stage": "S1",
+      "llm_enabled": false,
+      "required_passed_stages": [
+        "S0",
+        "S1"
+      ],
+      "partial_stage_checks": {
+        "stage": "S2",
+        "actor": "PROGRAM",
+        "output": "s2_checks.json",
+        "checks": [
+          "json_structure",
+          "resource_integrity",
+          "id_uniqueness",
+          "source_mapping"
+        ],
+        "semantic_checks": false,
+        "mark_passed": false,
+        "phase_state": "PENDING"
+      },
+      "visual_review_enabled": false
+    },
+    "offline_fixture": {
+      "scope": "fixture",
+      "network_enabled": false,
+      "allowed_terminal_stage": "S8",
+      "live_llm_enabled": false,
+      "max_parse_submissions": 0,
+      "max_live_llm_requests": 0,
+      "actor_modes": {
+        "PROGRAM": "live",
+        "MINERU": "fixture",
+        "LLM_ANALYST": "fixture",
+        "LLM_CONVERTER": "fixture",
+        "LLM_REVIEWER": "fixture",
+        "LLM_VISUAL_REVIEWER": "fixture"
+      }
+    },
+    "llm_smoke": {
+      "scope": "sample",
+      "uses_cached_parse": true,
+      "max_llm_requests": 8,
+      "allowed_terminal_stage": "S8",
+      "source_pages_max": 3,
+      "max_parse_submissions": 0,
+      "cached_through_stage": "S1",
+      "resume_at_stage": "S2",
+      "visual_review": {
+        "enabled": true,
+        "mode": "sampled",
+        "max_source_pages": 1,
+        "uses_existing_test_book": true,
+        "included_in_max_llm_requests": true
+      }
+    },
+    "book": {
+      "enabled_by_default": false,
+      "scope": "full",
+      "explicit_budgets_required": true,
+      "allowed_terminal_stage": "S8",
+      "visual_review": {
+        "enabled": true,
+        "mode": "targeted"
+      }
+    }
+  },
+  "retry_policy": {
+    "retryable_http_statuses": [
+      429,
+      500,
+      502,
+      503,
+      504
+    ],
+    "retryable_events": [
+      "read_only_transport_failure",
+      "known_not_submitted"
+    ],
+    "unknown_mutation_result": "reconcile_existing_task_or_needs_review",
+    "backoff_seconds": [
+      5
+    ],
+    "respect_retry_after": true,
+    "budget_exhausted": "FAILED",
+    "authentication": "FAILED",
+    "schema_error": "repair",
+    "truncation": "replan"
+  },
+  "invalidation": {
+    "source_or_parser": [
+      "S1",
+      "S2",
+      "S3",
+      "S4",
+      "S5",
+      "S6",
+      "S7",
+      "S8"
+    ],
+    "normalization": [
+      "S2",
+      "S3",
+      "S4",
+      "S5",
+      "S6",
+      "S7",
+      "S8"
+    ],
+    "structure": [
+      "S3",
+      "S4",
+      "S5",
+      "S6",
+      "S7",
+      "S8"
+    ],
+    "book_profile": [
+      "S4",
+      "S5",
+      "S6",
+      "S7",
+      "S8"
+    ],
+    "task_plan": [
+      "S5",
+      "S6",
+      "S7",
+      "S8"
+    ],
+    "fragment": [
+      "S6",
+      "S7",
+      "S8"
+    ],
+    "template": [
+      "S7",
+      "S8"
+    ],
+    "visual_review_config_or_model": [
+      "S2",
+      "S3",
+      "S4",
+      "S5",
+      "S6",
+      "S7",
+      "S8"
+    ]
+  },
+  "finding_severities": [
+    "BLOCKER",
+    "NOTE"
+  ],
+  "actors": {
+    "PROGRAM": {
+      "category": "program",
+      "name": "程序",
+      "responsibilities": [
+        "调度与预算",
+        "PDF 粗分块和服务适配",
+        "数据归一化与来源管理",
+        "候选规则枚举和计数器模拟",
+        "任务规划",
+        "确定性 TeX 渲染与编译",
+        "门槛检查、状态转换和产物提交",
+        "原始 PDF 页面和局部区域渲染、图像证据与视觉核对覆盖管理"
+      ],
+      "may_commit_artifacts": true,
+      "may_transition_states": true
+    },
+    "MINERU": {
+      "category": "mineru",
+      "name": "MinerU",
+      "responsibilities": [
+        "解析提交的 PDF 分块",
+        "返回页面内容、布局、公式、图表及资源"
+      ],
+      "may_commit_artifacts": false,
+      "may_transition_states": false
+    },
+    "LLM_ANALYST": {
+      "category": "llm",
+      "name": "分析 LLM",
+      "responsibilities": [
+        "内容取舍与跨页续接判断",
+        "目录和标题架构分析",
+        "数学单元分类",
+        "作者计数器规则候选与例外分析",
+        "引用消歧和异常诊断"
+      ],
+      "may_commit_artifacts": false,
+      "may_transition_states": false
+    },
+    "LLM_CONVERTER": {
+      "category": "llm",
+      "name": "转换 LLM",
+      "responsibilities": [
+        "根据冻结配置生成结构化 TeX 片段",
+        "根据审查问题执行局部修正"
+      ],
+      "may_commit_artifacts": false,
+      "may_transition_states": false
+    },
+    "LLM_REVIEWER": {
+      "category": "llm",
+      "name": "审查 LLM",
+      "responsibilities": [
+        "独立核验语义判断及变更证据",
+        "对照来源审查 TeX 内容",
+        "核验跨任务边界",
+        "返回结构化审查报告"
+      ],
+      "may_commit_artifacts": false,
+      "may_transition_states": false
+    },
+    "LLM_VISUAL_REVIEWER": {
+      "category": "llm",
+      "name": "多模态核对 LLM",
+      "responsibilities": [
+        "独立读取原始 PDF 图像中的文字、公式与内容区域",
+        "依据原图对照视觉读数与 MinerU 解析内容",
+        "定位遗漏、识别差异和不可辨认区域",
+        "返回带来源与覆盖范围的核对报告"
+      ],
+      "may_commit_artifacts": false,
+      "may_transition_states": false
+    }
+  },
+  "orchestrator": "PROGRAM",
+  "artifact_committer": "PROGRAM",
+  "state_transition_authority": "PROGRAM",
+  "llm_role_policy": {
+    "roles": [
+      "LLM_ANALYST",
+      "LLM_CONVERTER",
+      "LLM_REVIEWER",
+      "LLM_VISUAL_REVIEWER"
+    ],
+    "model_binding_fields": [
+      "analyst_model",
+      "converter_model",
+      "reviewer_model",
+      "visual_reviewer_model"
+    ],
+    "same_model_allowed": true,
+    "independent_review_context_required": true,
+    "all_roles_share_concurrency": "llm_concurrency",
+    "all_roles_share_request_budget": true,
+    "required_request_metadata": [
+      "role",
+      "model_id",
+      "prompt_version",
+      "input_hash",
+      "request_id"
+    ],
+    "semantic_report_requires": [
+      "source_ids",
+      "evidence",
+      "findings",
+      "decision"
+    ],
+    "image_review_requires_image_capability": true,
+    "insufficient_evidence": "NEEDS_REVIEW",
+    "required_capabilities_by_role": {
+      "LLM_VISUAL_REVIEWER": {
+        "input_modalities": [
+          "text",
+          "image"
+        ]
+      }
+    }
+  },
+  "gate_responsibilities": {
+    "G00": {
+      "decision_owner": "PROGRAM",
+      "evidence_actors": [
+        "PROGRAM"
+      ],
+      "semantic_evidence_policy": "deterministic_checks_or_prior_passed_reports",
+      "llm_self_approval_allowed": false
+    },
+    "G10": {
+      "decision_owner": "PROGRAM",
+      "evidence_actors": [
+        "PROGRAM"
+      ],
+      "semantic_evidence_policy": "deterministic_checks_or_prior_passed_reports",
+      "llm_self_approval_allowed": false
+    },
+    "G11": {
+      "decision_owner": "PROGRAM",
+      "evidence_actors": [
+        "PROGRAM",
+        "MINERU"
+      ],
+      "semantic_evidence_policy": "deterministic_checks_or_prior_passed_reports",
+      "llm_self_approval_allowed": false
+    },
+    "G20": {
+      "decision_owner": "PROGRAM",
+      "evidence_actors": [
+        "PROGRAM"
+      ],
+      "semantic_evidence_policy": "deterministic_checks_or_prior_passed_reports",
+      "llm_self_approval_allowed": false
+    },
+    "G21": {
+      "decision_owner": "PROGRAM",
+      "evidence_actors": [
+        "PROGRAM",
+        "LLM_ANALYST",
+        "LLM_REVIEWER"
+      ],
+      "semantic_evidence_policy": "independent_report_for_semantic_decisions",
+      "llm_self_approval_allowed": false
+    },
+    "G30": {
+      "decision_owner": "PROGRAM",
+      "evidence_actors": [
+        "PROGRAM",
+        "LLM_ANALYST",
+        "LLM_REVIEWER"
+      ],
+      "semantic_evidence_policy": "independent_report_for_semantic_decisions",
+      "llm_self_approval_allowed": false
+    },
+    "G31": {
+      "decision_owner": "PROGRAM",
+      "evidence_actors": [
+        "PROGRAM",
+        "LLM_ANALYST",
+        "LLM_REVIEWER"
+      ],
+      "semantic_evidence_policy": "independent_report_for_semantic_decisions",
+      "llm_self_approval_allowed": false
+    },
+    "G40": {
+      "decision_owner": "PROGRAM",
+      "evidence_actors": [
+        "PROGRAM",
+        "LLM_ANALYST",
+        "LLM_REVIEWER"
+      ],
+      "semantic_evidence_policy": "independent_report_for_semantic_decisions",
+      "llm_self_approval_allowed": false
+    },
+    "G41": {
+      "decision_owner": "PROGRAM",
+      "evidence_actors": [
+        "PROGRAM",
+        "LLM_ANALYST",
+        "LLM_REVIEWER"
+      ],
+      "semantic_evidence_policy": "independent_report_for_semantic_decisions",
+      "llm_self_approval_allowed": false
+    },
+    "G50": {
+      "decision_owner": "PROGRAM",
+      "evidence_actors": [
+        "PROGRAM"
+      ],
+      "semantic_evidence_policy": "deterministic_checks_or_prior_passed_reports",
+      "llm_self_approval_allowed": false
+    },
+    "G51": {
+      "decision_owner": "PROGRAM",
+      "evidence_actors": [
+        "PROGRAM"
+      ],
+      "semantic_evidence_policy": "deterministic_checks_or_prior_passed_reports",
+      "llm_self_approval_allowed": false
+    },
+    "G60": {
+      "decision_owner": "PROGRAM",
+      "evidence_actors": [
+        "PROGRAM"
+      ],
+      "semantic_evidence_policy": "deterministic_checks_or_prior_passed_reports",
+      "llm_self_approval_allowed": false
+    },
+    "G61": {
+      "decision_owner": "PROGRAM",
+      "evidence_actors": [
+        "PROGRAM",
+        "LLM_REVIEWER"
+      ],
+      "semantic_evidence_policy": "independent_report_for_semantic_decisions",
+      "llm_self_approval_allowed": false
+    },
+    "G62": {
+      "decision_owner": "PROGRAM",
+      "evidence_actors": [
+        "PROGRAM",
+        "LLM_REVIEWER"
+      ],
+      "semantic_evidence_policy": "independent_report_for_semantic_decisions",
+      "llm_self_approval_allowed": false
+    },
+    "G70": {
+      "decision_owner": "PROGRAM",
+      "evidence_actors": [
+        "PROGRAM"
+      ],
+      "semantic_evidence_policy": "deterministic_checks_or_prior_passed_reports",
+      "llm_self_approval_allowed": false
+    },
+    "G71": {
+      "decision_owner": "PROGRAM",
+      "evidence_actors": [
+        "PROGRAM"
+      ],
+      "semantic_evidence_policy": "deterministic_checks_or_prior_passed_reports",
+      "llm_self_approval_allowed": false
+    },
+    "G80": {
+      "decision_owner": "PROGRAM",
+      "evidence_actors": [
+        "PROGRAM"
+      ],
+      "semantic_evidence_policy": "deterministic_checks_or_prior_passed_reports",
+      "llm_self_approval_allowed": false
+    },
+    "G22": {
+      "decision_owner": "PROGRAM",
+      "evidence_actors": [
+        "PROGRAM",
+        "LLM_VISUAL_REVIEWER"
+      ],
+      "semantic_evidence_policy": "independent_image_observation_and_image_comparison",
+      "llm_self_approval_allowed": false
+    }
+  },
+  "visual_review": {
+    "enabled_by_default": true,
+    "default_mode": "targeted",
+    "modes": [
+      "targeted",
+      "sampled",
+      "full"
+    ],
+    "actor": "LLM_VISUAL_REVIEWER",
+    "model_binding_field": "visual_reviewer_model",
+    "required_input_modalities": [
+      "text",
+      "image"
+    ],
+    "source": "original_pdf",
+    "page_dpi": 150,
+    "crop_dpi": 300,
+    "source_image_metadata": [
+      "source_sha256",
+      "page_idx",
+      "pdf_region",
+      "rotation",
+      "render_dpi",
+      "image_sha256"
+    ],
+    "phases": [
+      "image_only_observation",
+      "image_and_parser_comparison"
+    ],
+    "independent_contexts": true,
+    "parser_text_in_observation": false,
+    "base_logical_requests_per_unit": 2,
+    "max_evidence_expansions": 1,
+    "requests_share_global_budget": true,
+    "checks": [
+      "symbols",
+      "subscripts_superscripts",
+      "text",
+      "equations",
+      "missing_content",
+      "duplicate_content",
+      "reading_order",
+      "semantic_boundaries"
+    ],
+    "results": [
+      "MATCH",
+      "MISMATCH",
+      "SOURCE_UNREADABLE",
+      "REVIEW_INCONCLUSIVE"
+    ],
+    "missing_content_route": "S1",
+    "recognition_correction_route": "S2_new_revision",
+    "recheck_corrected_content": true,
+    "unsupported_modality": "CAPABILITY_UNSUPPORTED",
+    "plan_artifact": "visual_review/plan.json",
+    "report_artifact": "visual_review/index.json",
+    "full_page_and_crop_coverage_separate": true,
+    "unresolved_findings_block_acceptance": true,
+    "confidence_alone_is_sufficient": false,
+    "disabled_status": "DISABLED",
+    "empty_plan_status": "NO_TARGETS",
+    "zero_targets_is_verified": false
+  },
+  "processing_units": {
+    "S1": "mineru_transport_chunks_by_pdf_pages_and_bytes",
+    "S2": "uniform_box_type_policy_applied_by_program_then_original_image_evidence",
+    "S3": "incremental_block_clusters_with_open_semantic_path",
+    "S5": "semantic_subtrees_split_only_at_child_boundaries",
+    "S6": "semantic_tasks_with_read_only_context_and_boundary_reviews",
+    "pdf_pages_after_aggregation": "provenance_and_visual_evidence_only",
+    "atomic_equations": "never_split_across_conversion_tasks",
+    "oversized_atomic_unit": "NEEDS_REVIEW",
+    "recovery": "verify_input_and_content_hashes_before_reusing_checkpoints"
+  }
+}

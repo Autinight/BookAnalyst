@@ -1,0 +1,422 @@
+{
+  "schema_version": "0.1",
+  "evidence_origin": "fixture",
+  "fixture_kind": "manually_transcribed_mineru_shape_not_live_parse",
+  "source_page": 14,
+  "layout": {
+    "pdf_info": [
+      {
+        "page_idx": 0,
+        "page_size": [
+          812,
+          1257
+        ],
+        "para_blocks": [
+          {
+            "type": "text",
+            "bbox": [
+              58,
+              100,
+              190,
+              125
+            ],
+            "lines": [
+              {
+                "spans": [
+                  {
+                    "type": "text",
+                    "content": "Chapter 1"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "text",
+            "bbox": [
+              58,
+              150,
+              310,
+              185
+            ],
+            "lines": [
+              {
+                "spans": [
+                  {
+                    "type": "text",
+                    "content": "Introduction"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "text",
+            "bbox": [
+              58,
+              388,
+              215,
+              418
+            ],
+            "lines": [
+              {
+                "spans": [
+                  {
+                    "type": "text",
+                    "content": "Summary"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "text",
+            "bbox": [
+              58,
+              440,
+              765,
+              560
+            ],
+            "lines": [
+              {
+                "spans": [
+                  {
+                    "type": "text",
+                    "content": "The principal objective of this work is the systematic development of the general theory of second order quasilinear elliptic equations and of the linear theory required in the process. This means we shall be concerned with the solvability of boundary value problems (primarily the Dirichlet problem) and related general properties of solutions of linear equations"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "interline_equation",
+            "bbox": [
+              58,
+              580,
+              765,
+              609
+            ],
+            "lines": [
+              {
+                "spans": [
+                  {
+                    "type": "text",
+                    "content": "Lu\\equiv a^{ij}(x)D_{ij}u+b^i(x)D_i u+c(x)u=f(x),\\quad i,j=1,2,\\ldots,n,"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "text",
+            "bbox": [
+              58,
+              629,
+              540,
+              651
+            ],
+            "lines": [
+              {
+                "spans": [
+                  {
+                    "type": "text",
+                    "content": "and of quasilinear equations"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "interline_equation",
+            "bbox": [
+              58,
+              675,
+              765,
+              704
+            ],
+            "lines": [
+              {
+                "spans": [
+                  {
+                    "type": "text",
+                    "content": "Qu\\equiv a^{ij}(x,u,Du)D_{ij}u+b(x,u,Du)=0."
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "text",
+            "bbox": [
+              58,
+              724,
+              765,
+              866
+            ],
+            "lines": [
+              {
+                "spans": [
+                  {
+                    "type": "text",
+                    "content": "Here \\(Du=(D_1u,\\ldots,D_nu)\\), where \\(D_i u=\\partial u/\\partial x_i\\), \\(D_{ij}u=\\partial^2u/\\partial x_i\\partial x_j\\), etc., and the summation convention is understood. The ellipticity of these equations is expressed by the fact that the coefficient matrix \\([a^{ij}]\\) is (in each case) positive definite in the domain of the respective arguments. We refer to an equation as uniformly elliptic if the ratio \\(\\gamma\\) of maximum to minimum eigenvalue of the matrix \\([a^{ij}]\\) is bounded. We shall be concerned with both non-uniformly and uniformly elliptic equations."
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "text",
+            "bbox": [
+              58,
+              870,
+              765,
+              914
+            ],
+            "lines": [
+              {
+                "spans": [
+                  {
+                    "type": "text",
+                    "content": "The classical prototypes of linear elliptic equations are of course Laplace’s equation"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "interline_equation",
+            "bbox": [
+              58,
+              935,
+              765,
+              963
+            ],
+            "lines": [
+              {
+                "spans": [
+                  {
+                    "type": "text",
+                    "content": "\\Delta u=\\sum D_{ii}u=0"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "text",
+            "bbox": [
+              58,
+              985,
+              765,
+              1034
+            ],
+            "lines": [
+              {
+                "spans": [
+                  {
+                    "type": "text",
+                    "content": "and its inhomogeneous counterpart, Poisson’s equation \\(\\Delta u=f\\). Probably the best known example of a quasilinear elliptic equation is the minimal surface equation"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "interline_equation",
+            "bbox": [
+              58,
+              1055,
+              765,
+              1086
+            ],
+            "lines": [
+              {
+                "spans": [
+                  {
+                    "type": "text",
+                    "content": "\\sum D_i(D_i u/(1+|Du|^2)^{1/2})=0,"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "text",
+            "bbox": [
+              58,
+              1105,
+              765,
+              1200
+            ],
+            "lines": [
+              {
+                "spans": [
+                  {
+                    "type": "text",
+                    "content": "which arises in the problem of least area. This equation is non-uniformly elliptic, with \\(\\gamma=1+|Du|^2\\). The properties of the differential operators in these examples motivate much of the theory of the general classes of equations discussed in this book."
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "discarded_blocks": []
+      }
+    ]
+  },
+  "structure": {
+    "nodes": [
+      {
+        "id": "chapter1",
+        "parent_id": null,
+        "kind": "chapter",
+        "atom_ids": [
+          0,
+          1
+        ],
+        "title": "Introduction",
+        "number": "1"
+      },
+      {
+        "id": "summary",
+        "parent_id": "chapter1",
+        "kind": "section",
+        "atom_ids": [
+          2
+        ],
+        "title": "Summary",
+        "number": null
+      },
+      {
+        "id": "n3",
+        "parent_id": "summary",
+        "kind": "paragraph",
+        "atom_ids": [
+          3
+        ],
+        "title": "",
+        "number": null
+      },
+      {
+        "id": "n4",
+        "parent_id": "summary",
+        "kind": "equation",
+        "atom_ids": [
+          4
+        ],
+        "title": "",
+        "number": "1.1"
+      },
+      {
+        "id": "n5",
+        "parent_id": "summary",
+        "kind": "paragraph",
+        "atom_ids": [
+          5
+        ],
+        "title": "",
+        "number": null
+      },
+      {
+        "id": "n6",
+        "parent_id": "summary",
+        "kind": "equation",
+        "atom_ids": [
+          6
+        ],
+        "title": "",
+        "number": "1.2"
+      },
+      {
+        "id": "n7",
+        "parent_id": "summary",
+        "kind": "paragraph",
+        "atom_ids": [
+          7
+        ],
+        "title": "",
+        "number": null
+      },
+      {
+        "id": "n8",
+        "parent_id": "summary",
+        "kind": "paragraph",
+        "atom_ids": [
+          8
+        ],
+        "title": "",
+        "number": null
+      },
+      {
+        "id": "n9",
+        "parent_id": "summary",
+        "kind": "equation",
+        "atom_ids": [
+          9
+        ],
+        "title": "",
+        "number": null
+      },
+      {
+        "id": "n10",
+        "parent_id": "summary",
+        "kind": "paragraph",
+        "atom_ids": [
+          10
+        ],
+        "title": "",
+        "number": null
+      },
+      {
+        "id": "n11",
+        "parent_id": "summary",
+        "kind": "equation",
+        "atom_ids": [
+          11
+        ],
+        "title": "",
+        "number": null
+      },
+      {
+        "id": "n12",
+        "parent_id": "summary",
+        "kind": "paragraph",
+        "atom_ids": [
+          12
+        ],
+        "title": "",
+        "number": null
+      }
+    ],
+    "toc_mode": "body_reconstructed",
+    "toc": [],
+    "counter_candidates": [
+      {
+        "id": "chapter-equations",
+        "counters": [
+          {
+            "id": "equations",
+            "types": [
+              "equation"
+            ],
+            "reset": "chapter",
+            "prefix": "chapter"
+          }
+        ],
+        "exceptions": []
+      }
+    ],
+    "references": [],
+    "findings": []
+  },
+  "visual_observation": {
+    "reading": "Chapter 1\nIntroduction\nSummary\nThe principal objective of this work is the systematic development of the general theory of second order quasilinear elliptic equations and of the linear theory required in the process. This means we shall be concerned with the solvability of boundary value problems (primarily the Dirichlet problem) and related general properties of solutions of linear equations\nLu\\equiv a^{ij}(x)D_{ij}u+b^i(x)D_i u+c(x)u=f(x),\\quad i,j=1,2,\\ldots,n,\nand of quasilinear equations\nQu\\equiv a^{ij}(x,u,Du)D_{ij}u+b(x,u,Du)=0.\nHere \\(Du=(D_1u,\\ldots,D_nu)\\), where \\(D_i u=\\partial u/\\partial x_i\\), \\(D_{ij}u=\\partial^2u/\\partial x_i\\partial x_j\\), etc., and the summation convention is understood. The ellipticity of these equations is expressed by the fact that the coefficient matrix \\([a^{ij}]\\) is (in each case) positive definite in the domain of the respective arguments. We refer to an equation as uniformly elliptic if the ratio \\(\\gamma\\) of maximum to minimum eigenvalue of the matrix \\([a^{ij}]\\) is bounded. We shall be concerned with both non-uniformly and uniformly elliptic equations.\nThe classical prototypes of linear elliptic equations are of course Laplace’s equation\n\\Delta u=\\sum D_{ii}u=0\nand its inhomogeneous counterpart, Poisson’s equation \\(\\Delta u=f\\). Probably the best known example of a quasilinear elliptic equation is the minimal surface equation\n\\sum D_i(D_i u/(1+|Du|^2)^{1/2})=0,\nwhich arises in the problem of least area. This equation is non-uniformly elliptic, with \\(\\gamma=1+|Du|^2\\). The properties of the differential operators in these examples motivate much of the theory of the general classes of equations discussed in this book.",
+    "regions": [],
+    "unreadable": false
+  },
+  "limitations": [
+    "人工转录的局部程序测试夹具，不代表 MinerU 或多模态模型真实输出。",
+    "原页两个编号不足以证明全书重置规则；本夹具预设章级公式规则仅用于程序测试。"
+  ],
+  "source_sha256": "2e52689220538bcc2dc05f68794ee35d3c4715dfd29bd80fb46aedbac7aa06a0"
+}
