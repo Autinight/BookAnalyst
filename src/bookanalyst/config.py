@@ -10,11 +10,11 @@ DEFAULT_SETTINGS = {
     "default_connection": "openai_subscription",
     "connections": {
         "openai_subscription": {"kind": "codex_chatgpt", "enabled": True, "model_id": "",
-                                "max_in_flight": 2, "timeout_seconds": 180},
+                                "max_in_flight": 2, "timeout_seconds": 600},
         "custom_api": {"kind": "openai_compatible", "enabled": False, "base_url": "",
                        "protocol": "chat_completions", "model_id": "", "auth_mode": "bearer",
                        "api_key_env": "LLM_CUSTOM_API_KEY", "image_support": "unknown",
-                       "max_in_flight": 2, "timeout_seconds": 180},
+                       "max_in_flight": 2, "timeout_seconds": 600},
     },
     "mineru": {"cloud_url": "https://mineru.net/api/v4", "api_key_env": "MINERU_API_TOKEN",
                "local_url": "http://127.0.0.1:8000", "backend": "pipeline",

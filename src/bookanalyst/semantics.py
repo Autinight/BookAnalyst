@@ -49,15 +49,17 @@ STRUCTURE = object_schema({
 })
 FRAGMENT = object_schema({"task_id": TEXT, "profile_hash": TEXT, "input_hash": TEXT,
     "nodes": array({"oneOf": [object_schema({"atom_id": TEXT, "kind": {"const": "source_ref"}}),
-                              object_schema({"atom_id": TEXT, "kind": {"const": "math"}, "latex": TEXT})]}),
-    "changes": array(object_schema({"atom_id": TEXT, "before": TEXT, "after": TEXT, "reason": TEXT})),
+                              object_schema({"atom_id": TEXT, "kind": {"const": "math"}, "latex": TEXT}),
+                              object_schema({"atom_id": TEXT, "kind": {"const": "text"}, "text": TEXT})]}),
+    "changes": array(object_schema({"atom_id": TEXT, "before": TEXT, "after": TEXT, "reason": TEXT,
+        "kind": {"enum": ["transcription", "tex_normalization"]}, "evidence_ids": STRINGS})),
     "findings": array(FINDING)})
 
 
 def require_review(report, expected_ids):
     if report["decision"] != "PASS" or report["findings"] or not report["evidence"].strip():
         raise WorkflowError("SEMANTIC_REVIEW", "独立审查存在未解决问题", review=True)
-    if set(report["source_ids"]) != set(expected_ids):
+    if Counter(report["source_ids"]) != Counter(expected_ids):
         raise WorkflowError("REVIEW_COVERAGE", "审查未覆盖本次全部来源", review=True)
 
 
@@ -223,30 +225,22 @@ FORBIDDEN = {"hspace", "phantom", "tag", "nonumber", "notag"}
 UNRESOLVED_CONTROLS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
 
 
-def control_character_findings(atoms):
-    """Detect invalid transcription bytes without assigning them mathematical meaning."""
-    findings = []
-    for atom in atoms:
-        matches = list(UNRESOLVED_CONTROLS.finditer(atom["text"]))
-        if matches:
-            findings.append({"source_ids": [atom["atom_id"]], "page_idx": atom["page_idx"],
-                "type": "UNRESOLVED_CONTROL_CHARACTER",
-                "occurrences": [{"offset": m.start(), "codepoint": f"U+{ord(m.group()):04X}"} for m in matches],
-                "evidence": "Parser text contains control characters without a verified visible meaning.",
-                "message": "需依据原始 PDF 图像核对字符，禁止猜测替换或静默删除"})
-    return findings
-
-
 def require_resolved_characters(text):
     if UNRESOLVED_CONTROLS.search(text):
-        raise WorkflowError("UNRESOLVED_CONTROL_CHARACTER", "内容包含未核对的控制字符，需回到 S2 原图核对", review=True)
+        raise WorkflowError("UNRESOLVED_CONTROL_CHARACTER", "内容包含未核对的控制字符，需在转换时对照原图修正", review=True)
+
+
+def math_commands(text):
+    # TeX consumes a control symbol (including a row break) as a whole token.
+    # Thus two backslashes followed by M mean a row break and the letter M.
+    return [name for name in re.findall(r"\\(?:([A-Za-z]+)|.)", text, re.S) if name]
 
 
 def check_math(text):
     require_resolved_characters(text)
     if re.search(r"(?<!\\)[%#]", text):
         raise WorkflowError("TEX_STYLE", "数学片段包含不允许的字符")
-    for command in re.findall(r"\\([A-Za-z]+)", text):
+    for command in math_commands(text):
         if command not in ALLOWED_COMMANDS or command in FORBIDDEN:
             raise WorkflowError("TEX_STYLE", f"数学命令未登记: {command}", review=True)
     stack = []
@@ -285,34 +279,66 @@ def equation_content_ids(node, atoms):
     return result
 
 
-def validate_fragment(fragment, task, atoms):
-    if fragment["task_id"] != task["task_id"] or fragment["input_hash"] != task["input_hash"] or fragment["profile_hash"] != task["profile_hash"]:
+def converted_text(node, atom):
+    return node.get("text", node.get("latex", atom["text"]))
+
+
+def validate_fragment(fragment, task, atoms, image_evidence=()):
+    if any(fragment[k] != task[k] for k in ("task_id", "input_hash", "profile_hash")):
         raise WorkflowError("STALE_FRAGMENT", "转换片段版本不一致")
     if [n["atom_id"] for n in fragment["nodes"]] != task["owned_atom_ids"]:
         raise WorkflowError("CONTENT_COVERAGE", "片段存在遗漏、重复或越权来源")
     if fragment["findings"]:
-        raise WorkflowError("CONTENT_REVIEW", "转换片段仍有疑点", review=True)
+        structural = any(f["type"] in ("STRUCTURE_CHANGED", "NUMBERING_CHANGED") for f in fragment["findings"])
+        raise WorkflowError("STRUCTURE_CHANGED" if structural else "CONTENT_REVIEW",
+                            "转换发现结构或编号变化，需回到 S3/S4" if structural else "转换片段仍有疑点", review=True)
     changes = {c["atom_id"]: c for c in fragment["changes"]}
-    grouped = {aid for group in task.get("math_groups", []) for aid in group}
+    if len(changes) != len(fragment["changes"]):
+        raise WorkflowError("INVALID_CHANGE", "同一原子的变更记录重复")
+    image_map = {e["evidence_id"]: e for e in image_evidence}
     fragment_nodes = {n["atom_id"]: n for n in fragment["nodes"]}
-    for group in task.get("math_groups", []):
-        if not set(group) <= set(task["owned_atom_ids"]):
-            raise WorkflowError("SPLIT_FORMULA", "公式的 block 集群跨越转换任务")
-        check_math("\n".join(fragment_nodes[aid].get("latex", atoms[aid]["text"]) for aid in group))
+    grouped = {aid for group in task.get("math_groups", []) for aid in group}
     used = set()
     for node in fragment["nodes"]:
         atom = atoms[node["atom_id"]]
-        if node["kind"] == "math":
-            if atom["type"] not in ("interline_equation", "equation"):
-                raise WorkflowError("CONTENT_REWRITE", "普通文本必须引用原文，不能自由改写")
-            if node["atom_id"] not in grouped:
-                check_math(node["latex"])
-            if node["latex"] != atom["text"]:
-                change = changes.get(node["atom_id"])
-                if not change or change["before"] != atom["text"] or change["after"] != node["latex"] or not change["reason"]:
-                    raise WorkflowError("UNDOCUMENTED_CHANGE", "公式变更缺少精确记录")
-                used.add(node["atom_id"])
-        elif atom["type"] in ("interline_equation", "equation") and node["atom_id"] not in grouped:
-            check_math(atom["text"])
+        math_atom = atom["type"] in ("interline_equation", "equation")
+        if node["kind"] == "math" and not math_atom or node["kind"] == "text" and math_atom:
+            raise WorkflowError("CONTENT_REWRITE", "输出类型与来源不匹配")
+        text = converted_text(node, atom)
+        require_resolved_characters(text)
+        if text != atom["text"]:
+            change = changes.get(node["atom_id"])
+            if not change or change["before"] != atom["text"] or change["after"] != text or not change["reason"].strip():
+                raise WorkflowError("UNDOCUMENTED_CHANGE", "变更缺少精确来源和前后记录")
+            if not text.strip():
+                raise WorkflowError("CONTENT_REWRITE", "不能通过空输出删除正文")
+            ids = change.get("evidence_ids", [])
+            if len(set(ids)) != len(ids) or any(i not in image_map or atom["atom_id"] not in image_map[i]["source_ids"] for i in ids):
+                raise WorkflowError("INVALID_IMAGE_EVIDENCE", "变更引用的图像未覆盖该原子")
+            if change.get("kind") == "transcription":
+                if not ids:
+                    raise WorkflowError("IMAGE_EVIDENCE_REQUIRED", "识别修正必须依据已发送的原图")
+            elif change.get("kind") != "tex_normalization" or not math_atom:
+                raise WorkflowError("INVALID_CHANGE", "普通文本修正必须依据原图；数学风格规范化须明确分类")
+            for semantic in task.get("semantic_nodes", []):
+                if atom["atom_id"] not in semantic["atom_ids"]:
+                    continue
+                prefix = semantic.get("source_prefix", "")
+                heading = semantic["kind"] in ("part", "chapter", "section", "subsection", "subsubsection")
+                if (atom["atom_id"] in task.get("number_only_atom_ids", [])
+                        or heading and not prefix
+                        or prefix and semantic["atom_ids"][0] == atom["atom_id"] and not text.startswith(prefix)):
+                    raise WorkflowError("STRUCTURE_CHANGED", "修正改变了冻结的标题或编号，需回到 S3/S4", review=True)
+            used.add(node["atom_id"])
+        if math_atom and node["atom_id"] not in grouped:
+            check_math(text)
+        elif not math_atom:
+            # Runtime import avoids a module cycle; the renderer owns common inline syntax.
+            from .tex import inline
+            inline(text)
+    for group in task.get("math_groups", []):
+        if not set(group) <= set(task["owned_atom_ids"]):
+            raise WorkflowError("SPLIT_FORMULA", "公式的 block 集群跨越转换任务")
+        check_math("\n".join(converted_text(fragment_nodes[aid], atoms[aid]) for aid in group))
     if set(changes) != used:
         raise WorkflowError("INVALID_CHANGE", "变更记录包含未应用的变更")

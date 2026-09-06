@@ -17,11 +17,13 @@
 <input name="profile" type="hidden" value="book"><input name="start_page" type="hidden" value="1"><input name="end_page" type="hidden">
 <div class="form-grid"><label>解析策略<select name="parser"><option value="cloud">MinerU 线上 API</option><option value="local">MinerU 本地服务</option></select></label>
 <label>LLM 并发数量<input name="llm_concurrency" type="number" min="1" value="2" required></label>
-<label>LLM 请求总预算<input name="max_llm_requests" type="number" min="1" placeholder="填写本次累计请求上限，可恢复续增" required></label></div>
+<label>LLM 请求总预算<input name="max_llm_requests" type="number" min="1" placeholder="留空不限"></label>
+<label>每批处理页数<input name="pages_per_task" type="number" min="1" value="2" required></label>
+<label>内容审查<select name="review_mode"><option value="on_demand">按需处理问题</option><option value="all">逐批独立审查</option></select></label></div>
 <p id="profile-note" class="note"></p><label id="cache-field">解析结果<select name="cached_run_id" id="cached-run"><option value="">重新解析书籍</option></select></label>
 <details><summary>模型、核对范围与解析预算</summary><div class="form-grid">
-<label>视觉核对<select name="visual_mode"><option value="full">全部原图</option><option value="sampled">指定原图</option><option value="disabled">关闭</option></select></label>
-<label>核对 PDF 页（逗号分隔）<input name="visual_pages" placeholder="例如 14,15"></label>
+<label>视觉核对<select name="visual_mode"><option value="targeted">按转换内容附原图</option><option value="disabled">关闭</option></select></label>
+<input type="hidden" name="visual_pages" value="">
 <label>解析提交预算<input name="max_parse_submissions" type="number" min="0" value="1"></label>
 <label>累计解析页数预算<input name="max_submitted_pages" type="number" min="0" value="3"></label></div><div id="role-fields"></div></details>
 <div id="run-error" class="form-error" role="alert"></div>

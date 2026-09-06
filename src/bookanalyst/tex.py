@@ -4,7 +4,7 @@ import re
 import shutil
 from pathlib import Path
 
-from .semantics import check_math, equation_content_ids, require_resolved_characters
+from .semantics import check_math, equation_content_ids, require_resolved_characters, converted_text
 from .store import WorkflowError, digest
 
 THEOREMS = ("theorem", "lemma", "definition", "proposition", "corollary", "remark", "example", "exercise", "claim")
@@ -37,10 +37,11 @@ def inline(text):
 
 
 def render(atoms, structure, profile, fragments):
-    for atom in atoms:
-        require_resolved_characters(atom["text"])
     atom_map = {a["atom_id"]: a for a in atoms}
     fragment_map = {n["atom_id"]: n for f in fragments for n in f["nodes"]}
+    for aid, candidate in fragment_map.items():
+        require_resolved_characters(converted_text(candidate, atom_map[aid]))
+    change_map = {c["atom_id"]: c for f in fragments for c in f.get("changes", [])}
     preamble = [r"\usepackage{amsmath,amssymb,amsthm}", r"\usepackage{graphicx}", r"\usepackage{hyperref}"]
     # Every environment uses the one shared profile. Fragment authors cannot define counters.
     covered = set()
@@ -80,7 +81,7 @@ def render(atoms, structure, profile, fragments):
     def atom_text(aid, prefix=""):
         atom = atom_map[aid]
         candidate = fragment_map[aid]
-        text = candidate.get("latex", atom["text"])
+        text = converted_text(candidate, atom)
         if prefix:
             if not text.startswith(prefix):
                 raise WorkflowError("INVALID_PREFIX", "Converted opening prefix changed")
@@ -114,7 +115,7 @@ def render(atoms, structure, profile, fragments):
             if prefix:
                 lines.extend(atom_text(aid, prefix if i == 0 else "") for i, aid in enumerate(aids))
         elif kind == "equation":
-            latex = "\n".join(fragment_map[aid].get("latex", atom_map[aid]["text"])
+            latex = "\n".join(converted_text(fragment_map[aid], atom_map[aid])
                               for aid in equation_content_ids(node, atom_map))
             check_math(latex)
             if not latex:
@@ -165,7 +166,9 @@ def render(atoms, structure, profile, fragments):
                 emit(child)
         for aid in aids:
             mappings[aid] = {"file": "body.tex", "line": first, "node_id": node["id"],
-                             "page_idx": atom_map[aid]["page_idx"], "bbox": atom_map[aid]["bbox"]}
+                             "page_idx": atom_map[aid]["page_idx"], "bbox": atom_map[aid]["bbox"],
+                             "original_text_hash": digest(atom_map[aid]["text"]),
+                             "conversion_change": change_map.get(aid)}
         lines.append("")
 
     for node in children.get(None, []):
@@ -179,7 +182,9 @@ def render(atoms, structure, profile, fragments):
         for entry in structure["toc"]:
             for aid in entry["atom_ids"]:
                 mappings[aid] = {"file": "main.tex", "line": len(main), "node_id": entry["node_id"],
-                                 "page_idx": atom_map[aid]["page_idx"], "bbox": atom_map[aid]["bbox"]}
+                                 "page_idx": atom_map[aid]["page_idx"], "bbox": atom_map[aid]["bbox"],
+                             "original_text_hash": digest(atom_map[aid]["text"]),
+                             "conversion_change": change_map.get(aid)}
     main.extend([r"\input{body}", r"\end{document}"])
     return {"tex/main.tex": "\n".join(main) + "\n",
             "tex/preamble.tex": "\n".join(preamble) + "\n",
@@ -197,7 +202,8 @@ async def compile_tex(directory, ledger, structure, executable=None):
     output = ""
     for attempt in range(1, 4):
         process = await asyncio.create_subprocess_exec(executable, "-no-shell-escape", "-interaction=nonstopmode",
-            "-halt-on-error", "-file-line-error", "main.tex", cwd=directory,
+            "-file-line-error", "-jobname=main",
+            r"\tracinglostchars=3 \input{main.tex}", cwd=directory,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
         try:
             raw, _ = await asyncio.wait_for(process.communicate(), 90)
@@ -208,6 +214,8 @@ async def compile_tex(directory, ledger, structure, executable=None):
         output = raw.decode("utf-8", errors="replace")
         if process.returncode:
             return {"status": "FAILED", "code": "TEX_ERROR", "log": output[-12000:],
+                    "errors": [{"file": f, "line": int(line), "message": message} for f, line, message in
+                        re.findall(r"(body\.tex):(\d+): ([^\r\n]+)", output)],
                     "passes": attempt, "evidence_origin": "live"}
         rerun = bool(re.search(r"Rerun to get|Please rerun|Label\(s\) may have changed|There were undefined references|rerun LaTeX", output))
         if not rerun:
@@ -219,7 +227,21 @@ async def compile_tex(directory, ledger, structure, executable=None):
         return {"status": "FAILED", "code": "COMPILE_OUTPUT_MISSING",
                 "passes": attempt, "evidence_origin": "live"}
     aux = (directory / "main.aux").read_text(encoding="utf-8", errors="replace")
-    labels = dict(re.findall(r"\\newlabel\{(ba:[^}]+)\}\{\{([^}]*)\}", aux))
+    labels = {}
+    for match in re.finditer(r"\\newlabel\{(ba:[^}]+)\}\{", aux):
+        start = match.end()
+        if start >= len(aux) or aux[start] != "{":
+            continue
+        depth, end = 1, start + 1
+        while end < len(aux) and depth:
+            if aux[end] == "{" and aux[end - 1] != "\\": depth += 1
+            elif aux[end] == "}" and aux[end - 1] != "\\": depth -= 1
+            end += 1
+        value = aux[start + 1:end - 1]
+        # amsmath's explicit tag adds one enclosing group to the label value.
+        if value.startswith("{") and value.endswith("}") and "{" not in value[1:-1] and "}" not in value[1:-1]:
+            value = value[1:-1]
+        labels[match.group(1)] = value
     expected = {f"ba:{row['node_id']}": row["number"] for row in ledger}
     expected.update({f"ba:{n['id']}": n["number"] for n in structure["nodes"]
                      if n["kind"] in HEADINGS and n["number"] is not None})

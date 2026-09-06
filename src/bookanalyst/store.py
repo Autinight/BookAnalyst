@@ -45,7 +45,7 @@ def file_hash(path):
 def atomic_json(path, value):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
+    temporary = path.with_name("." + uuid.uuid4().hex + ".tmp")
     with temporary.open("w", encoding="utf-8", newline="\n") as stream:
         stream.write(encode(value) + "\n")
         stream.flush()
@@ -105,7 +105,7 @@ class Store:
         scope = "fixture" if config["profile"] == "offline_fixture" else (
             "full" if config["profile"] == "book" else "sample")
         run = dict(id=key, revision=1, created_at=time.time(), updated_at=time.time(),
-                   state="PENDING", scope=scope, config=config, source=book,
+                   state="PENDING", workflow_version="0.5", scope=scope, config=config, source=book,
                    parser_settings=parser_settings, stages={s: {"state": "PENDING"} for s in STAGES},
                    usage={"llm": 0, "parse": 0, "pages": 0}, findings=[], corrections=[],
                    events=[], repair_counts={}, result=None)
@@ -212,8 +212,8 @@ class Store:
             else:
                 path.write_text(content, encoding="utf-8", newline="\n")
             hashes[name] = file_hash(path)
-        manifest = dict(schema_version="0.4", run_id=run_id, revision=revision, stage=stage,
-                        producer_version="0.1.0", input_hashes=input_hashes, files=hashes,
+        manifest = dict(schema_version="0.5", run_id=run_id, revision=revision, stage=stage,
+                        producer_version="0.5.0", input_hashes=input_hashes, files=hashes,
                         gate_results={g: "PASSED" for g in gates})
         atomic_json(directory / "manifest.json", manifest)
         self.transition(run_id, revision, stage, "PASSED", artifact_revision=revision,

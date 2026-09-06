@@ -13,31 +13,25 @@ uv run --no-sync bookanalyst
 
 打开 **http://127.0.0.1:8765**，也可运行 `powershell -File scripts/start.ps1`。本机已有 TeX Live 已加入用户 PATH；脚本使用现有环境，不下载 TeX。旧终端需重新打开才能收到环境更新。
 
-## 书籍转换
+## 新版工作流
 
-主界面选择整本书、MinerU 线上或本地策略、LLM 并发数量与累计请求预算，然后开始运行。可复用相同书籍的整本解析缓存。模型连接在独立设置页管理：优先支持 ChatGPT 官方订阅，也支持自定义 Chat Completions／Responses API，包括另行部署的 vLLM。
+本工作树采用 [工作流 v0.5](docs/workflow.md)：用户指定每个任务处理几页，程序把这些页全部保留的 block 分给转换 LLM，并允许按需查询前后一页。转换时直接对照原图、修正符号并生成 TeX；程序按来源合并和编译。默认只对具体问题追加局部 LLM 处理，逐批独立审查为可选模式。
 
-处理单位随阶段明确区分：
+不做前置疑点登记，不先逐页修完符号，也不把建立整书语义树作为转换前提。页码只用于分派和定位，不生成原书排版。
 
-1. 程序根据 MinerU 的页数与文件大小上限拆分 PDF，用于提交解析。
-2. 聚合全部 MinerU JSON，保留稳定来源 ID、原始 block 与资源。后续不按页分派模型任务。
-3. 分批分析 block，传递标题路径、开放的数学环境、相邻原文与续接证据；建立全书标题树，统一校验目录、引用和作者编号。
-4. 优先将完整语义子树组成转换任务；超出容量的章节或长证明在子节点边界拆分。完整公式不拆开，过大的原子对象阻断并保留证据。
-5. 并行转换、独立审查与相邻边界核对，通过后由程序统一生成 TeX、编译、核验和导出。
+新版执行器与面板已实现。每批页数和并发可设置；默认 `review_mode=on_demand`，可选 `all`；没有前置整书语义树、逐页转录或固定边界审查。实现与真实联调状态见 [实现状态](docs/implementation.md)。
 
-原始 PDF／解析内容／TeX 三栏按来源 ID 联动。页序号仅用于查看证据和视觉核对。完整原图核对采用“独立看图读数 → 比较解析内容”两次调用；验收报告明确记录实际核对范围。
+## 测试资料与验证
 
-分析、转换和边界审查均有持久化检查点。失败后可从阶段恢复；输入和审查配置未变的已通过工作可复用。局部转换重跑会更新对应任务与相邻边界，累计预算不清零。
+完整测试资料包括 [532 页数学书](tests/data/books/elliptic-pde-second-order.pdf) 和 [45 页 Wang 论文](tests/data/papers/wang-2022-g-invariant-min-max.pdf)，来源哈希见 [书籍清单](tests/data/books.json)。
 
-## 测试用书与验证
+[新版程序测试](tests/test_pageflow.py)使用真实 MinerU 解析的 45 页、893 个原始块检查分派和来源覆盖，并验证邻页只读、直接转换纠错、断点恢复、局部修复与实际 XeLaTeX 编译。程序测试中的替代模型只检验程序行为，不证明真实转换保真度。
 
-完整测试书已保存为 [elliptic-pde-second-order.pdf](tests/data/books/elliptic-pde-second-order.pdf)，共 532 页；[书籍清单](tests/data/books.json)记录大小与 SHA-256。
+新版 Wang 完整 45 页真实流程已跑通（运行修订 8）：上游 `gpt-6-astra` 完成 23 批转换，804 个保留块按序唯一覆盖，138 个显式编号核对通过，生成 52 页 PDF。两遍 XeLaTeX 编译通过，最终没有缺字或纸面越界。累计 46 次应用层 LLM 调用，新增 MinerU 提交 0；程序回归 90 项通过。
 
-[整书回归](tests/test_book_scale.py)对真实 PDF 做 532 页分块，使用明确标记的模拟 MinerU JSON 和模型服务，检查跨解析分块公式、长证明、全书目录与引用、故障恢复、局部重跑和真实 XeLaTeX 编译。模拟测试验证程序在整书规模下的行为，不能代表这本书的 OCR 与真实模型转换质量。
+这证明完整流程能够运行，不代表逐行无损还原。默认按需审查，未做全篇独立语义复核；抽查发现原文末页邮箱未进入 MinerU JSON，输出也缺少该行。真实用量、修复及已知局限见 [新版验证记录](docs/validation-v0.5.md)。[旧版记录](docs/validation.md)单独保留。
 
-开发 API 保留 `offline_fixture`、`cloud_smoke`、`local_smoke`、`llm_smoke` 用于隔离适配器故障；这些有限范围测试不作为主界面的书籍处理分类。
-
-官方订阅模型列表读取成功，包括上游实际返回的 `gpt-6-astra`。用户授权扩展后，532 页真实 MinerU 解析已全部完成，已开始最多 100 次官方订阅真实 LLM 联调。下载连接和真实资源路径兼容问题已修复。全书 TeX 验收及本机 MinerU／vLLM 部署尚未完成。详见 [验证记录](docs/validation.md) 与 [实现状态](docs/implementation.md)。
+开发 API 中的 `offline_fixture`、`cloud_smoke`、`local_smoke`、`llm_smoke` 用于隔离适配器故障，不代表整书验证。
 
 ## 配置与数据
 
@@ -51,7 +45,7 @@ uv run --no-sync bookanalyst
 uv run --no-sync pytest -q
 ```
 
-整书测试需要 PATH 中的 XeLaTeX，否则会明确跳过。浏览器测试 [tests/browser_smoke.cjs](tests/browser_smoke.cjs)需要 Node.js、Playwright 与 Microsoft Edge；设置 `BOOKANALYST_PLAYWRIGHT` 为已有模块路径后执行 `node tests/browser_smoke.cjs`。它只读取账户模型元数据、创建离线夹具，不上传书籍或执行真实推理。
+编译回归需要 PATH 中的 XeLaTeX，否则会明确跳过。新版浏览器检查 [tests/browser_pageflow.cjs](tests/browser_pageflow.cjs)需要 Node.js、Playwright 与 Microsoft Edge。设置 `BOOKANALYST_PLAYWRIGHT`、`BOOKANALYST_URL` 及可选 `BOOKANALYST_RUN` 后执行；检查面板和设置，不创建推理请求。
 
 - [严格工作流](docs/workflow.md)与 [执行契约](docs/workflow.contract.json)：参与成员、阶段、关卡及恢复。
 - [本地 Web 操作](docs/local-web.md)：来源定位、修正和导出。

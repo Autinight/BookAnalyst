@@ -1,7 +1,7 @@
-param([ValidateRange(1, 65535)][int]$Port = 8765)
+param([ValidateRange(1, 65535)][int]$Port = 8765, [string]$PythonExecutable = "")
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
-$pythonExecutable = Join-Path $projectRoot '.venv\Scripts\python.exe'
+if (-not $PythonExecutable) { $PythonExecutable = Join-Path $projectRoot '.venv\Scripts\python.exe' }
 if (-not (Test-Path -LiteralPath $pythonExecutable -PathType Leaf)) {
     throw 'Run uv sync --frozen --extra dev in the project directory first.'
 }
@@ -13,5 +13,6 @@ $env:Path = (($combinedPath -split ';') | Where-Object { $_ -and $pathEntries.Ad
 if (-not (Get-Command xelatex -ErrorAction SilentlyContinue)) {
     Write-Warning 'XeLaTeX is not on PATH; TeX compilation will stop at S7 until it is available.'
 }
+$env:PYTHONPATH = Join-Path $projectRoot 'src'
 & $pythonExecutable -m bookanalyst --workspace $projectRoot --port $Port
 exit $LASTEXITCODE

@@ -24,7 +24,7 @@ def test_local_api_requires_session_token_and_rejects_foreign_origin(app):
 def test_test_book_and_profile_limits_are_real(app):
     with TestClient(app) as client:
         state=client.get("/api/bootstrap").json()
-        assert state["books"][0]["page_count"]==532
+        assert next(b for b in state["books"] if b["id"]==BOOK_ID)["page_count"]==532
         headers={"x-bookanalyst-token":state["token"]}
         response=client.post("/api/runs",headers=headers,json={
             "book_id":BOOK_ID,"start_page":14,"end_page":18,"profile":"cloud_smoke"})
@@ -68,8 +68,9 @@ async def test_offline_fixture_runs_real_gates_and_missing_compiler_never_accept
     assert result["stages"]["S8"]["state"]=="PENDING"
     assert result["usage"]=={"llm":0,"parse":0,"pages":0}
     visual=store.artifact(result,"S2","visual_review/index.json")
-    assert visual["evidence_origin"]=="fixture" and visual["full_pages"]==[13]
+    assert visual["evidence_origin"]=="fixture" and visual["full_pages"]==[]
+    assert visual["status"]=="DEFERRED_TO_CONVERSION"
     candidate=store.directory(run["id"],1,"S7")/"candidate/tex/body.tex"
-    assert "\\begin{equation}" in candidate.read_text()
+    assert "\\begin{equation*}" in candidate.read_text()
     assert "\\newcommand" not in candidate.read_text()
     await engine.close()

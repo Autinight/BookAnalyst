@@ -14,7 +14,7 @@
 
 本次确认旧 SDK 捆绑运行时只返回 6 个模型；改为本机 PATH 的官方 `codex-cli 0.153.3` 后，上游返回 7 个模型，默认 `gpt-6-astra`，且声明支持图像。这是本机 2026-09-05 的实际读取结果，后续以账户实时返回为准。
 
-每次生成使用新的只读临时会话，传递任务文本、必要图像与输出 JSON Schema。应用校验结构化结果后再交回业务层；不会自动切换到另一账户或 API 渠道。
+每次生成使用新的只读持久会话，保存上游 thread / turn 标识以便读取未及时返回的结果，并传递任务文本、必要图像与输出 JSON Schema。应用校验结构化结果后再交回业务层；不会自动切换到另一账户或 API 渠道。
 
 ## 自定义 API
 
@@ -29,7 +29,7 @@
 | api_key_env | 保存密钥的环境变量名，默认 `LLM_CUSTOM_API_KEY` |
 | image_support | `unknown`、`supported`、`unsupported`；由用户确认，当前不是自动探测结果 |
 | max_in_flight | 该连接共享的最大并发，默认 2 |
-| timeout_seconds | 单次应用调用截止时间，默认 180 秒 |
+| timeout_seconds | 单次应用调用截止时间，默认 600 秒 |
 
 适配器按协议分别追加 `/chat/completions` 或 `/responses`，不通过失败后尝试另一协议来猜测服务。两种协议均传递实际图片内容；输出必须通过客户端 JSON Schema 校验。[协议参考](https://developers.openai.com/api/docs/guides/migrate-to-responses)
 
@@ -48,7 +48,7 @@
       "enabled": true,
       "model_id": "",
       "max_in_flight": 2,
-      "timeout_seconds": 180
+      "timeout_seconds": 600
     },
     "custom_api": {
       "kind": "openai_compatible",
@@ -60,7 +60,7 @@
       "api_key_env": "LLM_CUSTOM_API_KEY",
       "image_support": "unknown",
       "max_in_flight": 2,
-      "timeout_seconds": 180
+      "timeout_seconds": 600
     }
   }
 }
@@ -74,6 +74,8 @@
 
 应用预算按一次 `generate` 计数：官方渠道对应一次 Codex turn，自定义渠道对应一次 HTTP 模型请求。官方运行时内部可能包含多次推理或重试，当前无法完整观测，记录为 unknown；不能将应用调用数当作供应商实际推理次数。
 
-请求超时或传输中断保留 RESULT_UNKNOWN，不假设远端没有执行。当前提供 `status`、`login`、`resolve` 和 `generate` 方法；完整取消、细粒度能力探测、额度分类与未知结果登记仍待补齐。自定义连接只检查配置时显示 CONFIGURED_UNTESTED，不能显示为实际调用成功。
+请求超时或传输中断保留 RESULT_UNKNOWN，不假设远端没有执行。当前提供 `status`、`login`、`resolve`、`generate` 和 `reconcile`。官方订阅在提交时保存持久任务与 turn 标识，恢复先读取原 turn；缺少标识时保留未知。自定义 HTTP 接口尚无通用请求恢复协议。完整取消、细粒度能力探测与额度分类仍待补齐。自定义连接只检查配置时显示 CONFIGURED_UNTESTED，不能显示为实际调用成功。
 
-截至本次验证：官方订阅账户及模型列表读取成功，已使用上游 gpt-6-astra 对真实书籍 block 发起结构化分析和独立审查，并保存实际响应。自定义两种协议的文字／图片负载与错误处理通过模拟服务测试；真实全书原图审查尚未完成。
+截至 2026-09-06：官方订阅账户及模型列表读取成功，已使用上游 gpt-6-astra 跑通新版 Wang 45 页完整转换与编译，累计 46 次应用调用。自定义两种协议的文字／图片负载与错误处理通过模拟服务测试；真实全书原图审查尚未完成。
+
+新版恢复接口依据[官方 App Server 文档](https://learn.chatgpt.com/docs/app-server)及本机安装的 SDK 验证；工作流参与步骤不包含供应商配置。新版真实验证状态见 [v0.5 记录](validation-v0.5.md)。

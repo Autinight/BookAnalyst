@@ -9,8 +9,7 @@ from .models import STAGES
 from .store import WorkflowError, atomic_json, digest, file_hash
 from .pipeline import Pipeline
 
-GATES = [["G00"], ["G10", "G11"], ["G20", "G21", "G22"], ["G30", "G31"],
-         ["G40", "G41"], ["G50", "G51"], ["G60", "G61", "G62"], ["G70", "G71"], ["G80"]]
+GATES = [['G00'], ['G10', 'G11'], ['G20', 'G21'], ['G30'], ['G40'], ['G50'], ['G60'], ['G70', 'G71'], ['G80']]
 
 
 class Engine:
@@ -40,6 +39,8 @@ class Engine:
         semaphore = asyncio.Semaphore(run["config"]["llm_concurrency"])
         current = "S0"
         try:
+            if run.get("workflow_version") != "0.5":
+                raise WorkflowError("WORKFLOW_VERSION", "旧流程运行请使用原执行器；新版需建立独立运行并复用解析")
             for current in STAGES:
                 run = self.store.get("run", run_id)
                 if run["revision"] != revision:
@@ -56,7 +57,7 @@ class Engine:
                                for s in STAGES[:STAGES.index(current)]})
                 self.store.commit(run_id, revision, current, outputs,
                                   GATES[STAGES.index(current)], inputs)
-                if current == run["config"].get("stop_after"):
+                if run.get("pause_requested") or current == run["config"].get("stop_after"):
                     self.store.change(run_id, lambda r: r.update(state="PAUSED"), revision)
                     return
                 if current == "S1" and run["config"]["profile"] in ("cloud_smoke", "local_smoke"):
@@ -83,8 +84,9 @@ class Engine:
 
     def fail(self, run_id, revision, stage, error):
         state = "NEEDS_REVIEW" if error.review else "FAILED"
+        run_state = "PAUSED" if error.code == "WORKFLOW_PAUSED" else state
         def apply(run):
-            run["state"] = state
+            run["state"] = run_state
             phase = run["stages"][stage]
             if phase["state"] == "RUNNING":
                 phase["state"] = state
@@ -103,6 +105,15 @@ class Engine:
             run["state"] = "RUNNING"
         self.store.operation(run_id, command.revision, command.operation_id, apply)
         return self.launch(run_id)
+
+    def pause(self, run_id, command):
+        def apply(run):
+            if run["state"] != "RUNNING":
+                raise WorkflowError("NOT_RUNNING", "当前没有正在执行的运行")
+            run["pause_requested"] = True
+            run["events"].append({"time": time.time(), "state": "PAUSE_REQUESTED",
+                "message": "不再派发新请求，等待在途请求返回后保存结果"})
+        return self.store.operation(run_id, command.revision, command.operation_id, apply)
 
     def preview(self, run_id, stage, task_id=None):
         run = self.store.get("run", run_id)
@@ -124,10 +135,40 @@ class Engine:
             if any(run["stages"][s]["state"] != "PASSED" for s in STAGES[:index]):
                 raise WorkflowError("PRECONDITION", "请选择首个未通过的阶段恢复")
             unresolved = [c for c in self.store.calls(run_id) if c["state"] in ("RESERVED", "RESULT_UNKNOWN")]
-            if any(c["kind"] == "llm" for c in unresolved):
+            allowed = set(run.get("authorized_unknown_retries", []))
+            if command.retry_unrecoverable:
+                missing = [c["id"] for c in unresolved if c["kind"] == "llm" and not
+                    (self.store.root / "runs" / run_id / "requests" / c["id"] / "upstream.json").exists()]
+                allowed.update(missing)
+                run["authorized_unknown_retries"] = sorted(allowed)
+                run["events"].append({"time": time.time(), "state": "UNKNOWN_RETRY_AUTHORIZED",
+                    "call_ids": missing, "reason": command.reason,
+                    "note": "原请求仍为未知；旧用量保留。只重发缺少恢复句柄的请求。"})
+            if any(c["kind"] == "llm" and c["id"] not in allowed for c in unresolved):
                 raise WorkflowError("RESULT_UNKNOWN", "已有结果未知的模型请求，需先核对并登记远端结果", review=True)
+            released = set(run.get("released_interrupted_repairs", []))
+            for call in self.store.calls(run_id):
+                if (call["id"] in released or call["state"] != "FAILED"
+                        or call["metadata"].get("error_code") != "UPSTREAM_INTERRUPTED"
+                        or call["metadata"].get("purpose") != "convert_pages"):
+                    continue
+                directory = self.store.root / "runs" / run_id / "requests" / call["id"]
+                if not (directory / "request.json").exists() or (directory / "response.json").exists():
+                    continue
+                request = json.loads((directory / "request.json").read_text(encoding="utf-8"))
+                payload = json.loads(request["prompt"])
+                task_id = payload.get("task", {}).get("task_id")
+                if payload.get("error") and task_id:
+                    run["repair_counts"][task_id] = max(0, run["repair_counts"].get(task_id, 0) - 1)
+                    released.add(call["id"])
+                    run["events"].append({"time": time.time(), "state": "INTERRUPTED_REPAIR_RELEASED",
+                        "call_id": call["id"], "task_id": task_id,
+                        "note": "上游确认中断且无候选；恢复内容修正轮次，真实请求用量不变"})
+            run["released_interrupted_repairs"] = sorted(released)
             old_revision = run["revision"]
             historical = copy.deepcopy({"revision": old_revision, "stages": run["stages"], "config": run["config"]})
+            if command.llm_concurrency is not None:
+                run["config"]["llm_concurrency"] = command.llm_concurrency
             if command.additional_visual_pages:
                 if command.stage != "S2" or any(p < run["config"]["start_page"] or p > run["config"]["end_page"]
                                                 for p in command.additional_visual_pages):
@@ -157,10 +198,12 @@ class Engine:
             run["revision"] += 1
             run["retry_from_revision"] = old_revision
             run["rerun_task_id"] = command.task_id
+            run["rerun_reason"] = command.reason
             run["force_recompute"] = command.force_recompute and not command.task_id
             for stage in STAGES[index:]:
                 run["stages"][stage] = {"state": "PENDING", "invalidated_from": old_revision}
             run["state"], run["result"], run["findings"] = "RUNNING", None, []
+            run["pause_requested"] = False
             run["events"].append({"time": time.time(), "state": "REVISION_CREATED", "reason": command.reason})
         self.store.operation(run_id, command.revision, command.operation_id, apply)
         return self.launch(run_id)

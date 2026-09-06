@@ -24,7 +24,9 @@ class RunCreate(StrictModel):
     end_page: int = Field(1, ge=1)
     parser: Literal["cloud", "local"] = "cloud"
     llm_concurrency: int = Field(2, ge=1)
-    max_llm_requests: int | None = Field(8, ge=0)
+    pages_per_task: int = Field(2, ge=1, le=1000)
+    review_mode: Literal["on_demand", "all"] = "on_demand"
+    max_llm_requests: int | None = Field(None, ge=0)
     max_parse_submissions: int = Field(1, ge=0)
     max_submitted_pages: int = Field(3, ge=0)
     visual_mode: Literal["targeted", "sampled", "full", "disabled"] = "targeted"
@@ -63,6 +65,8 @@ class Rerun(Operation):
     stage: Literal["S0", "S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8"]
     task_id: str | None = None
     force_recompute: bool = False
+    retry_unrecoverable: bool = False
+    llm_concurrency: int | None = Field(None, ge=1)
     reason: str = Field(min_length=1, max_length=2000)
     additional_visual_pages: list[int] = Field(default_factory=list)
     max_llm_requests: int | None = Field(None, ge=0)

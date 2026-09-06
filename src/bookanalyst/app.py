@@ -50,7 +50,7 @@ def create_app(workspace=None, data_dir=None):
         yield
         await engine.close()
 
-    app = FastAPI(title="BookAnalyst", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="BookAnalyst", version="0.5.0", lifespan=lifespan)
     app.state.store, app.state.engine, app.state.workspace = store, engine, workspace
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "[::1]", "testserver"])
 
@@ -75,7 +75,7 @@ def create_app(workspace=None, data_dir=None):
     @app.get("/api/bootstrap")
     async def bootstrap():
         settings = store.get("settings", "main")
-        return {"token": token, "version": "0.1.0", "books": store.list("book"), "runs": store.list("run"),
+        return {"token": token, "version": "0.5.0", "books": store.list("book"), "runs": store.list("run"),
                 "settings": settings, "credentials": {
                     "mineru": bool(secret(workspace, settings["mineru"]["api_key_env"]))},
                 "stages": [s["name"] for s in json.loads(
@@ -176,7 +176,19 @@ def create_app(workspace=None, data_dir=None):
 
     @app.post("/api/runs/{run_id}/rerun")
     async def rerun(run_id: str, command: Rerun):
+        await providers.reconcile(store.get("run", run_id))
         return engine.rerun(run_id, command)
+
+    @app.post("/api/runs/{run_id}/pause")
+    async def pause(run_id: str, command: Operation):
+        return engine.pause(run_id, command)
+
+    @app.post("/api/runs/{run_id}/reconcile")
+    async def reconcile(run_id: str):
+        run = store.get("run", run_id)
+        if run["state"] == "RUNNING":
+            raise WorkflowError("RUNNING", "请等待当前运行停止后核对已有请求")
+        return {"calls": await providers.reconcile(run)}
 
     @app.post("/api/runs/{run_id}/corrections")
     async def correction(run_id: str, command: Correction):
@@ -213,6 +225,17 @@ def create_app(workspace=None, data_dir=None):
             tasks = store.artifact(run, "S5", "tasks.json")["tasks"]
         if run["stages"]["S6"]["state"] == "PASSED":
             fragments = store.artifact(run, "S6", "fragments/index.json")["fragments"]
+            visual = store.artifact(run, "S6", "visual_review/index.json")
+        elif tasks:
+            for task in tasks:
+                pending = store.directory(run_id, run["revision"], "S6") / "conversion_work" / (task["task_id"] + ".json")
+                if pending.exists():
+                    saved = json.loads(pending.read_text(encoding="utf-8"))
+                    if saved.get("status") == "PASSED" and saved.get("input_hash") == task["input_hash"]:
+                        fragments.append(saved["fragment"])
+        if run["stages"]["S7"]["state"] == "PASSED":
+            fragments = store.artifact(run, "S7", "fragments/index.json")["fragments"]
+            structure = store.artifact(run, "S7", "merged_structure.json")
         tex, compile_report = None, None
         path = store.directory(run_id, run["revision"], "S7") / "candidate"
         if run["stages"]["S7"]["state"] == "PASSED":
