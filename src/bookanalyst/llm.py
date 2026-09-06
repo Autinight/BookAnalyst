@@ -130,10 +130,8 @@ class Providers:
         conn = self.connection(binding["connection_id"])
         if not binding["model_id"]:
             raise WorkflowError("MODEL_UNAVAILABLE", "运行模型尚未冻结")
-        # Text estimates include a tokenizer margin; image and protocol overhead are separate.
+        # Accounting estimate only; page ownership controls request size.
         input_estimate = estimate(prompt + encode(schema), binding["model_id"]) + len(images) * 8192 + 2048
-        if input_estimate + binding["output_tokens"] + binding["context_limit"] // 10 > binding["context_limit"]:
-            raise WorkflowError("CONTEXT_LIMIT", "请求超出上下文容量，请减小每批页数；单页仍超限时需调整模型容量", review=True)
         limit_key = (binding["connection_id"], conn["max_in_flight"])
         limit = self.limits.setdefault(limit_key, asyncio.Semaphore(conn["max_in_flight"]))
         async with semaphore or asyncio.Semaphore(1):
@@ -259,14 +257,14 @@ class Providers:
                 {"type": "image_url", "image_url": {"url": url}} for url in image_urls]
             payload = {"model": binding["model_id"], "messages": [
                 {"role": "system", "content": instruction}, {"role": "user", "content": content}],
-                "max_tokens": binding["output_tokens"], "stream": False}
+                "stream": False}
             endpoint = "/chat/completions"
         else:
             content = [{"type": "input_text", "text": prompt}] + [
                 {"type": "input_image", "image_url": url} for url in image_urls]
             payload = {"model": binding["model_id"], "instructions": instruction,
                        "input": [{"role": "user", "content": content}],
-                       "max_output_tokens": binding["output_tokens"], "stream": False, "store": False}
+                       "stream": False, "store": False}
             endpoint = "/responses"
         async with httpx.AsyncClient(timeout=conn["timeout_seconds"], transport=self.transport) as client:
             response = await client.post(conn["base_url"].rstrip("/") + endpoint, headers=headers, json=payload)

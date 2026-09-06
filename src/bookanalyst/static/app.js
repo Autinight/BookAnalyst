@@ -88,7 +88,7 @@ function openRun(bookId) {
  const form=$("#run-form"); form.reset(); $("#run-error").textContent="";
  $("#run-book").innerHTML=data.books.map(b=>`<option value="${b.id}">${esc(b.title)}</option>`).join("");
  if(bookId)$("#run-book").value=bookId;
- $("#role-fields").innerHTML=Object.entries(roles).map(([role,title])=>`<div class="role-row"><h3>${title}</h3><div class="form-grid"><label>连接<select name="${role}_connection">${Object.entries(data.settings.connections).map(([id,c])=>`<option value="${id}" ${id===data.settings.default_connection?"selected":""} ${c.enabled?"":"disabled"}>${c.kind==="codex_chatgpt"?"ChatGPT 官方订阅":esc(id)}</option>`).join("")}</select></label><label>模型<input name="${role}_model" list="models-${data.settings.default_connection}" placeholder="使用上游默认模型"></label><label>上下文上限<input name="${role}_context" type="number" value="32768" min="4096"></label><label>预留输出 token<input name="${role}_output" type="number" value="4096" min="256"></label></div></div>`).join("");
+ $("#role-fields").innerHTML=Object.entries(roles).map(([role,title])=>`<div class="role-row"><h3>${title}</h3><div class="form-grid"><label>连接<select name="${role}_connection">${Object.entries(data.settings.connections).map(([id,c])=>`<option value="${id}" ${id===data.settings.default_connection?"selected":""} ${c.enabled?"":"disabled"}>${c.kind==="codex_chatgpt"?"ChatGPT 官方订阅":esc(id)}</option>`).join("")}</select></label><label>模型<input name="${role}_model" list="models-${data.settings.default_connection}" placeholder="使用上游默认模型"></label></div></div>`).join("");
  bookChanged(); $("#run-dialog").showModal();
  loadModels(data.settings.default_connection).catch(error=>toast(error.message));
 }
@@ -117,7 +117,7 @@ if(button.dataset.book){openRun(button.dataset.book);return;}
 if(button.dataset.run){runId=button.dataset.run;pageIdx=data.runs.find(r=>r.id===runId).config.start_page-1;await navigate("compare");return;}
 if(button.dataset.correct){selected=button.dataset.correct;const a=viewData.atoms.find(a=>a.atom_id===selected);$("#correction-before").value=a.text;$("#correction-after").value=a.text;$("#correction-evidence").value="";$("#correction-error").textContent="";$("#correction-dialog").showModal();return;}
 if(button.dataset.atom){selectAtom(button.dataset.atom);return;}
-if(button.dataset.rerun){button.disabled=true;const preview=await api(`/api/runs/${runId}/rerun-preview?stage=${button.dataset.rerun}`);const target=$("#main .run-message");target.innerHTML+=`<p>将重跑 ${preview.stages.join(" → ")}，累计用量保持不变。</p><button class="button small primary" data-confirm-rerun="${button.dataset.rerun}">执行重跑</button>`;return;}
+if(button.dataset.rerun){button.disabled=true;const preview=await api(`/api/runs/${runId}/rerun-preview?stage=${button.dataset.rerun}`);const target=$("#main .run-message");target.innerHTML+=`<p>将重跑 ${preview.stages.join(" → ")}，已通过批次默认复用；耗尽的批次追加两轮自动修复，累计用量保持不变。</p><button class="button small primary" data-confirm-rerun="${button.dataset.rerun}">执行重跑</button>`;return;}
 if(button.dataset.action==="pause-run"){button.disabled=true;await api(`/api/runs/${runId}/pause`,"POST",{revision:viewData.run.revision,operation_id:crypto.randomUUID()});await refresh();await renderPage();return;}
 if(button.dataset.confirmRerun){button.disabled=true;await api(`/api/runs/${runId}/rerun`,"POST",{revision:viewData.run.revision,operation_id:crypto.randomUUID(),stage:button.dataset.confirmRerun,task_id:button.dataset.task||null,force_recompute:$("#rerun-recompute").checked,retry_unrecoverable:$("#rerun-unrecoverable").checked,llm_concurrency:Number($("#rerun-concurrency").value),
 max_llm_requests:$("#rerun-llm-budget").value.trim()?Number($("#rerun-llm-budget").value):null,max_parse_submissions:Number($("#rerun-parse-budget").value),
@@ -128,7 +128,7 @@ case "new-run":openRun();break;case "upload":$("#pdf-upload").click();break;
 case "prev-page":pageIdx--;await renderPage();break;case "next-page":pageIdx++;await renderPage();break;
 case "refresh-view":await refresh();await renderPage();break;
 case "rerun-preview":{const stage=$("#rerun-stage").value;const task=stage==="S6"?$("#rerun-task").value:"";const preview=await api(`/api/runs/${runId}/rerun-preview?stage=${stage}${task?"&task_id="+encodeURIComponent(task):""}`);
-$("#rerun-plan").innerHTML=`将重跑 ${preview.stages.join(" → ")}；涉及 ${preview.task_ids.length} 个转换任务。累计请求用量保持不变。 <button class="button small primary" data-confirm-rerun="${stage}" data-task="${esc(task)}">执行重跑</button>`;break;}
+$("#rerun-plan").innerHTML=`将重跑 ${preview.stages.join(" → ")}；涉及 ${preview.task_ids.length} 个转换任务。耗尽的批次追加两轮自动修复，累计请求用量保持不变。 <button class="button small primary" data-confirm-rerun="${stage}" data-task="${esc(task)}">执行重跑</button>`;break;}
 case "account-status":button.disabled=true;$("#account-status").textContent="正在检查…";{const status=await loadModels("openai_subscription");$("#account-status").textContent=status.status==="READY"?"已登录 · 可用模型："+status.models.map(m=>m.model||m.id).join("、")+(status.runtime?.version?" · "+status.runtime.version:""):status.status==="AUTH_REQUIRED"?"尚未登录，请通过官方登录完成授权。":status.message||status.status;}break;
 case "login":button.disabled=true;{const login=await api("/api/connections/openai_subscription/login","POST",{});$("#account-status").innerHTML=`<a href="${esc(login.auth_url)}" target="_blank" rel="noopener">打开官方授权页面 ↗</a><p>授权完成后，点击“检查登录状态”。</p>`;}break;
 }
@@ -143,7 +143,7 @@ const fields=new FormData(form),payload={};for(const key of ["book_id","profile"
 for(const key of ["start_page","end_page","llm_concurrency","pages_per_task","max_parse_submissions","max_submitted_pages"])payload[key]=Number(fields.get(key));
 payload.max_llm_requests=fields.get("max_llm_requests")?Number(fields.get("max_llm_requests")):null;
 payload.visual_pages=String(fields.get("visual_pages")||"").split(/[,，\s]+/).filter(Boolean).map(Number);payload.cached_run_id=fields.get("cached_run_id")||null;
-for(const role of Object.keys(roles))payload[role]={connection_id:fields.get(role+"_connection"),model_id:fields.get(role+"_model"),context_limit:Number(fields.get(role+"_context")),output_tokens:Number(fields.get(role+"_output"))};
+for(const role of Object.keys(roles))payload[role]={connection_id:fields.get(role+"_connection"),model_id:fields.get(role+"_model")};
 const run=await api("/api/runs","POST",payload);runId=run.id;pageIdx=payload.start_page-1;await api(`/api/runs/${runId}/start`,"POST",{revision:run.revision,operation_id:crypto.randomUUID()});
 $("#run-dialog").close();await refresh();await navigate("compare");
 }catch(error){$("#run-error").textContent=error.message;}finally{button.disabled=false;}};

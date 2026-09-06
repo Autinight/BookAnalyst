@@ -13,8 +13,13 @@ class StrictModel(BaseModel):
 class Binding(StrictModel):
     connection_id: str = "openai_subscription"
     model_id: str = ""
-    context_limit: int = Field(32768, ge=4096, le=2_000_000)
-    output_tokens: int = Field(4096, ge=256, le=100_000)
+    @model_validator(mode="before")
+    @classmethod
+    def discard_legacy_token_limits(cls, value):
+        # Accept old clients and saved configurations without enforcing their limits.
+        if isinstance(value, dict):
+            return {k: v for k, v in value.items() if k not in {"context_limit", "output_tokens"}}
+        return value
 
 
 class RunCreate(StrictModel):

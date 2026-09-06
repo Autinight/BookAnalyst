@@ -143,12 +143,15 @@
     ],
     "all_mode": "one_independent_review_per_completed_candidate",
     "cross_batch_environments": "program_carries_stack",
-    "numbering": "explicit_author_labels"
+    "numbering": "explicit_author_labels",
+    "application_context_limit": false,
+    "application_output_token_limit": false
   },
   "recovery": {
     "passed_tasks": "reuse_only_matching_inputs_and_hashes",
     "unknown_remote_outcome": "stop_and_reconcile",
-    "local_repairs": "at_most_two_completed_repair_rounds_per_task_across_stages",
+    "local_repairs": "two_completed_automatic_repair_rounds_per_task_across_stages_then_pause",
+    "manual_resume": "renew_exhausted_in_scope_tasks_by_two_rounds_keep_cumulative_counts_and_usage",
     "old_workflow_runs": "use_original_executor_or_import_only_verified_S1_parse",
     "confirmed_interruption": "release_incomplete_repair_round_once_keep_actual_usage",
     "merge_checkpoint": "reuse_previous_revision_only_when_S6_input_hash_matches"

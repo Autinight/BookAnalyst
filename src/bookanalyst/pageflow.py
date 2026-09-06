@@ -220,14 +220,17 @@ async def convert_pages(pipeline, run, task, all_atoms, profile, semaphore, repa
         extra_images.extend(more); extra_evidence.extend(records)
     fragment, error = None, repair or ({"problem": run.get("rerun_reason", "") }
         if run.get("rerun_task_id") == task["task_id"] else None)
-    used = pipeline.store.get("run", run["id"])["repair_counts"].get(task["task_id"], 0)
-    if repair and used >= 2:
-        raise WorkflowError("REPAIR_LIMIT", "该批次已达到两轮修正上限", review=True)
-    if repair:
+    current = pipeline.store.get("run", run["id"])
+    used = current["repair_counts"].get(task["task_id"], 0)
+    limit = current.get("repair_limits", {}).get(task["task_id"], 2)
+    explicit_repair = bool(repair or run.get("rerun_task_id") == task["task_id"])
+    if explicit_repair and used >= limit:
+        raise WorkflowError("REPAIR_LIMIT", "本轮自动修复次数已用尽，可手动恢复继续", review=True)
+    if explicit_repair:
         pipeline.store.change(run["id"], lambda r: r["repair_counts"].update({task["task_id"]: used + 1}), run["revision"])
         used += 1
     recovered_from = None
-    for attempt in range(3 - used):
+    for attempt in range(1 + limit - used):
         charged = bool(attempt or repair or run.get("rerun_task_id") == task["task_id"])
         if attempt:
             pipeline.store.change(run["id"], lambda r: r["repair_counts"].update(
@@ -297,7 +300,7 @@ async def convert_pages(pipeline, run, task, all_atoms, profile, semaphore, repa
             atomic_json(cache, result); atomic_json(progress, result)
             return result
         except WorkflowError as exc:
-            if charged and exc.code in {"CONFIG_REQUIRED", "MODEL_UNAVAILABLE", "CONTEXT_LIMIT", "BUDGET_EXHAUSTED", "CAPABILITY_UNSUPPORTED", "WORKFLOW_PAUSED"}:
+            if charged and exc.code in {"CONFIG_REQUIRED", "MODEL_UNAVAILABLE", "BUDGET_EXHAUSTED", "CAPABILITY_UNSUPPORTED", "WORKFLOW_PAUSED"}:
                 pipeline.store.change(run["id"], lambda r: r["repair_counts"].update(
                     {task["task_id"]: max(0, r["repair_counts"].get(task["task_id"], 0) - 1)}), run["revision"])
             error = {"code": exc.code, "message": exc.message, "review": error,
@@ -307,7 +310,7 @@ async def convert_pages(pipeline, run, task, all_atoms, profile, semaphore, repa
                 "INVALID_IMAGE_EVIDENCE", "TEX_STYLE", "SCHEMA_ERROR", "UNRESOLVED_CONTROL_CHARACTER",
                 "CONTENT_REVIEW", "SEMANTIC_REVIEW", "REVIEW_COVERAGE", "INVALID_TOC", "INVALID_NUMBER"}:
                 raise
-    raise WorkflowError("REPAIR_LIMIT", "该批次达到局部修正上限", review=True)
+    raise WorkflowError("REPAIR_LIMIT", "本轮自动修复次数已用尽，可手动恢复继续", review=True)
 
 
 class MergeError(WorkflowError):

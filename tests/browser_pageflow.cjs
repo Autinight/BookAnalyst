@@ -19,6 +19,7 @@ const {chromium}=require(process.env.BOOKANALYST_PLAYWRIGHT||'playwright');
     if(await form.locator('[name="review_mode"]').inputValue()!=='on_demand')throw Error('Expected on-demand review');
     if(await form.locator('[name="end_page"]').inputValue()!=='45')throw Error('Expected full Wang paper scope');
     if(await form.locator('[name="max_llm_requests"]').inputValue()!=='')throw Error('Expected no request cap');
+    if(await form.locator('[name$="_context"], [name$="_output"]').count())throw Error('Token limit controls must be absent');
     await form.locator('[name="pages_per_task"]').fill('3');
     await form.locator('[name="review_mode"]').selectOption('all');
     await page.screenshot({path:'.bookanalyst/workflow-settings.png',fullPage:true});

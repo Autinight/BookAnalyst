@@ -19,7 +19,7 @@ BOOK_ID="elliptic-pde-second-order"
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("protocol",["chat_completions","responses"])
-async def test_custom_channel_protocol_and_actual_image_transport(app,tmp_path,protocol):
+async def test_custom_channel_protocol_and_actual_image_transport(app,tmp_path,protocol,monkeypatch):
     store=app.state.store
     settings=store.get("settings","main")
     settings["connections"]["custom_api"].update(enabled=True,auth_mode="none",base_url="http://model.test/v1",
@@ -29,11 +29,15 @@ async def test_custom_channel_protocol_and_actual_image_transport(app,tmp_path,p
     config["reviewer"].update(connection_id="custom_api",model_id="test-model")
     run=store.create_run(config,store.get("book",BOOK_ID),settings["mineru"])
     image=tmp_path/"page.png";image.write_bytes(b"image-evidence")
+    # Old persisted limits and a large estimate must not block either protocol.
+    run["config"]["reviewer"].update(context_limit=4096,output_tokens=4096)
+    monkeypatch.setattr("bookanalyst.llm.estimate", lambda *args: 1_000_000)
     report={"decision":"PASS","source_ids":["a"],"evidence":"visible evidence","findings":[]}
     requests=[]
     def respond(request):
         body=json.loads(request.content)
         requests.append(body)
+        assert not {"max_tokens", "max_output_tokens", "max_completion_tokens"} & body.keys()
         if protocol=="chat_completions":
             assert request.url.path=="/v1/chat/completions"
             assert body["messages"][1]["content"][1]["image_url"]["url"].startswith("data:image/png;base64,")
@@ -45,6 +49,7 @@ async def test_custom_channel_protocol_and_actual_image_transport(app,tmp_path,p
     providers=Providers(store,app.state.workspace,transport=httpx.MockTransport(respond))
     assert await providers.generate(run,"reviewer","test","Check original image",REVIEW,[image])==report
     assert len(requests)==1
+    assert store.calls(run["id"])[0]["metadata"]["estimated_input_tokens"] > 1_000_000
     assert store.get("run",run["id"])["usage"]["llm"]==1
 
 
@@ -305,3 +310,10 @@ def test_real_mineru_bare_resource_name_resolves_images_directory(tmp_path):
         resolve_asset(tmp_path, "formula.jpg")
     with pytest.raises(WorkflowError):
         resolve_asset(tmp_path, "../outside.jpg")
+
+
+def test_legacy_binding_limits_are_ignored_and_absent_from_schema():
+    from bookanalyst.models import Binding
+    binding = Binding.model_validate({"model_id": "test-model", "context_limit": 1, "output_tokens": 1})
+    assert binding.model_dump() == {"connection_id": "openai_subscription", "model_id": "test-model"}
+    assert not {"context_limit", "output_tokens"} & Binding.model_json_schema()["properties"].keys()

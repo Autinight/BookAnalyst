@@ -415,3 +415,58 @@ async def test_missing_glyph_repairs_are_parallel_and_receive_only_owned_errors(
     monkeypatch.setattr(module,'compile_tex',compile);monkeypatch.setattr(module,'convert_pages',repair)
     output=await pipeline.S7(run,asyncio.Semaphore(2))
     assert len(output['repairs.json'])==3 and len(started)==3
+
+
+@pytest.mark.asyncio
+async def test_manual_resume_renews_exhausted_repairs_without_reconverting_passed_batch(app, monkeypatch):
+    from bookanalyst.models import Rerun
+    pipeline, run, atoms, tasks = setup(app)
+    engine = app.state.engine
+    store = pipeline.store
+    calls = []
+    valid = False
+    async def call(run, role, purpose, payload, *args):
+        task = payload['task']
+        calls.append(task['task_id'])
+        return fragment(task, [node(aid) for aid in task['owned_atom_ids']] if valid else [])
+    monkeypatch.setattr(pipeline, 'call', call)
+    monkeypatch.setattr(engine, 'launch', lambda rid: store.get('run', rid))
+    with pytest.raises(WorkflowError) as exc:
+        await convert_pages(pipeline, run, tasks[0], atoms, PROFILE, asyncio.Semaphore(1))
+    assert exc.value.code == 'REPAIR_LIMIT' and len(calls) == 3
+    valid = True
+    await convert_pages(pipeline, run, tasks[1], atoms, PROFILE, asyncio.Semaphore(1))
+    old_usage = store.get('run', run['id'])['usage'].copy()
+    store.change(run['id'], lambda r: r.update(state='NEEDS_REVIEW'))
+    command = Rerun(revision=1, operation_id='manual-repair-renewal', stage='S0', reason='Continue after automatic limit')
+    resumed = engine.rerun(run['id'], command)
+    assert resumed['repair_counts'][tasks[0]['task_id']] == 2
+    assert resumed['repair_limits'] == {tasks[0]['task_id']: 4}
+    assert resumed['usage'] == old_usage
+    engine.rerun(run['id'], command)  # Duplicate operation cannot grant twice.
+    assert store.get('run', run['id'])['repair_limits'][tasks[0]['task_id']] == 4
+    await convert_pages(pipeline, resumed, tasks[1], atoms, PROFILE, asyncio.Semaphore(1))
+    assert calls.count(tasks[1]['task_id']) == 1
+    result = await convert_pages(pipeline, resumed, tasks[0], atoms, PROFILE, asyncio.Semaphore(1))
+    assert result['status'] == 'PASSED'
+    assert calls.count(tasks[0]['task_id']) == 4
+    assert store.get('run', run['id'])['repair_counts'][tasks[0]['task_id']] == 3
+
+
+def test_selected_manual_retry_renews_only_selected_task(app, monkeypatch):
+    from bookanalyst.models import Rerun
+    pipeline, run, atoms, tasks = setup(app)
+    engine = app.state.engine
+    store = pipeline.store
+    monkeypatch.setattr(engine, 'preview', lambda *args: {})
+    monkeypatch.setattr(engine, 'launch', lambda rid: store.get('run', rid))
+    def prepare(r):
+        r['state'] = 'NEEDS_REVIEW'
+        r['repair_counts'] = {tasks[0]['task_id']: 2, tasks[1]['task_id']: 2}
+        for stage in ('S0','S1','S2','S3','S4','S5'):
+            r['stages'][stage]['state'] = 'PASSED'
+    store.change(run['id'], prepare)
+    resumed = engine.rerun(run['id'], Rerun(revision=1, operation_id='selected-repair-renewal',
+        stage='S6', task_id=tasks[0]['task_id'], reason='Retry selected batch'))
+    assert resumed['repair_limits'] == {tasks[0]['task_id']: 4}
+    assert resumed['repair_counts'] == {tasks[0]['task_id']: 2, tasks[1]['task_id']: 2}

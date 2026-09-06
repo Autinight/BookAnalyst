@@ -176,11 +176,21 @@ class Engine:
                 run["config"]["visual_pages"] = sorted(set(run["config"]["visual_pages"] + command.additional_visual_pages))
                 if run["config"]["visual_mode"] == "disabled":
                     run["config"]["visual_mode"] = "targeted"
-            if command.task_id:
-                count = run["repair_counts"].get(command.task_id, 0)
-                if count >= 2:
-                    raise WorkflowError("REPAIR_LIMIT", "该片段已达到 2 轮修正上限", review=True)
-                run["repair_counts"][command.task_id] = count + 1
+            # A manual retry renews exhausted automatic repair allowances. Keep
+            # cumulative counts and call usage so history remains truthful.
+            if index <= STAGES.index("S7"):
+                limits = run.setdefault("repair_limits", {})
+                renewed = {}
+                for task_id, count in run["repair_counts"].items():
+                    if command.task_id and task_id != command.task_id:
+                        continue
+                    if count >= limits.get(task_id, 2):
+                        limits[task_id] = count + 2
+                        renewed[task_id] = {"used": count, "limit": count + 2}
+                if renewed:
+                    run["events"].append({"time": time.time(), "state": "REPAIR_ALLOWANCE_RENEWED",
+                        "tasks": renewed, "reason": command.reason,
+                        "note": "手动恢复为耗尽的批次追加两轮自动修复；累计次数与实际用量保留"})
             for field in ("max_llm_requests", "max_parse_submissions", "max_submitted_pages"):
                 proposed = getattr(command, field)
                 if proposed is not None:
