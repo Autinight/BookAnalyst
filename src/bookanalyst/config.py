@@ -1,5 +1,6 @@
-"""Independent connection settings. Only environment-variable names are persisted."""
+"""Connection settings with write-only API keys and legacy environment references."""
 
+import copy
 import os
 import re
 from urllib.parse import urlparse
@@ -24,7 +25,6 @@ DEFAULT_SETTINGS = {
             "protocol": "chat_completions",
             "model_id": "",
             "auth_mode": "bearer",
-            "api_key_env": "LLM_CUSTOM_API_KEY",
             "image_support": "unknown",
             "max_in_flight": 2,
             "timeout_seconds": 600,
@@ -67,11 +67,9 @@ def validate_settings(value):
             DEFAULT_SETTINGS["connections"][
                 "openai_subscription" if kind == "codex_chatgpt" else "custom_api"
             ]
-        )
+        ) | ({"api_key_env"} if kind == "openai_compatible" else set())
         if kind not in ("codex_chatgpt", "openai_compatible") or set(conn) - allowed:
-            raise WorkflowError(
-                "INVALID_CONFIG", "连接字段无效；密钥只通过环境变量引用", 422
-            )
+            raise WorkflowError("INVALID_CONFIG", "连接字段无效", 422)
         if not isinstance(conn.get("max_in_flight"), int) or conn["max_in_flight"] < 1:
             raise WorkflowError("INVALID_CONFIG", "连接并发必须为正整数", 422)
         if (
@@ -87,8 +85,39 @@ def validate_settings(value):
                 raise WorkflowError("INVALID_CONFIG", "鉴权方式无效", 422)
             if conn.get("image_support") not in ("unknown", "supported", "unsupported"):
                 raise WorkflowError("INVALID_CONFIG", "图像能力状态无效", 422)
-            if not re.fullmatch(r"[A-Z][A-Z0-9_]{0,99}", conn.get("api_key_env", "")):
+            if "api_key_env" in conn and not re.fullmatch(
+                r"[A-Z][A-Z0-9_]{0,99}", conn["api_key_env"]
+            ):
                 raise WorkflowError("INVALID_CONFIG", "凭据必须填写环境变量名称", 422)
     if value["default_connection"] not in value["connections"]:
         raise WorkflowError("INVALID_CONFIG", "默认连接不存在", 422)
     return value
+
+
+def prepare_settings(value, previous):
+    """Validate everything before atomically saving settings and private credentials."""
+    value = copy.deepcopy(value)
+    credentials = {}
+    for name, conn in value.get("connections", {}).items():
+        if conn.get("kind") != "openai_compatible":
+            continue
+        key = conn.pop("api_key", "")
+        clear = conn.pop("clear_api_key", False)
+        conn.pop("api_key_configured", None)
+        if not isinstance(key, str) or not isinstance(clear, bool):
+            raise WorkflowError(
+                "INVALID_CONFIG", "API 密钥必须为文本，清除选项必须为布尔值", 422
+            )
+        key = key.strip()
+        if any(c.isspace() for c in key) or not key.isascii():
+            raise WorkflowError(
+                "INVALID_CONFIG", "API 密钥不能包含空格、换行或非 ASCII 字符", 422
+            )
+        if key and clear:
+            raise WorkflowError("INVALID_CONFIG", "填写新密钥时请取消清除选项", 422)
+        old = previous["connections"].get(name, {})
+        if "api_key_env" not in conn and "api_key_env" in old:
+            conn["api_key_env"] = old["api_key_env"]
+        if key or clear:
+            credentials[name] = key
+    return validate_settings(value), credentials

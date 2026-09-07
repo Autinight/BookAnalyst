@@ -378,12 +378,14 @@ document.addEventListener("submit", async (event) => {
       protocol: f.get("custom_protocol"),
       model_id: f.get("custom_model"),
       auth_mode: f.get("custom_auth"),
-      api_key_env: f.get("custom_env"),
+      api_key: f.get("custom_key"),
+      clear_api_key: f.has("custom_clear"),
       image_support: f.get("image_support"),
       max_in_flight: Number(f.get("custom_concurrency")),
       timeout_seconds: Number(f.get("custom_timeout")),
     });
     settings = await api("/api/settings", { method: "PUT", body: s });
+    if (route === "settings") $("#main").innerHTML = views.settings(settings);
     toast("连接设置已保存");
   } catch (error) {
     $("#settings-error").textContent = error.message;

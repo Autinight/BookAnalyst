@@ -28,14 +28,16 @@
 | protocol | 明确选择 `chat_completions` 或 `responses` |
 | model_id | 服务实际部署的模型 ID |
 | auth_mode | `bearer`，或本地服务明确使用 `none` |
-| api_key_env | 保存密钥的环境变量名，默认 `LLM_CUSTOM_API_KEY` |
+| API 密钥 | 直接粘贴服务提供的密钥；保存后不回显，留空保留现有值 |
 | image_support | `unknown`、`supported`、`unsupported`；由用户确认，当前不是自动探测结果 |
 | max_in_flight | 该连接共享的最大并发，默认 2 |
 | timeout_seconds | 单次应用调用截止时间，默认 600 秒 |
 
 适配器按协议分别追加 `/chat/completions` 或 `/responses`，不通过失败后尝试另一协议来猜测服务。两种协议均传递实际图片内容；输出必须通过客户端 JSON Schema 校验。[协议参考](https://developers.openai.com/api/docs/guides/migrate-to-responses)
 
-密钥从系统环境变量或项目 `.env` 读取；设置文件只保存变量名。MinerU 的 `MINERU_API_TOKEN` 与 LLM 的 `LLM_CUSTOM_API_KEY` 分属不同服务，互不复用。
+设置页直接使用密码输入框接收密钥。后台在本地 SQLite 的独立 `credential` 记录中保存；普通设置、GET/PUT 响应、请求正文与导出不包含密钥。保存后输入框清空，只显示是否已配置；留空保留，填写新值替换，勾选清除后保存则清除。
+
+本地凭据当前不额外加密，应用数据目录受本机文件权限管理并被 Git 忽略。旧的系统环境变量和 `.env` 配置继续兼容，但用户不需要填写变量名；直接保存的密钥优先，显式清除后不会回退使用旧环境变量。MinerU 与 LLM 的凭据互不复用。
 
 ## 实际配置
 
@@ -59,7 +61,7 @@
       "protocol": "chat_completions",
       "model_id": "",
       "auth_mode": "bearer",
-      "api_key_env": "LLM_CUSTOM_API_KEY",
+      "api_key_configured": false,
       "image_support": "unknown",
       "max_in_flight": 2,
       "timeout_seconds": 600
@@ -68,7 +70,7 @@
 }
 ```
 
-这是 v0.7 的完整设置对象。旧 MinerU 设置保留为历史配置，不进入当前接口。当前 UI 编辑上述两个连接；后端可保存其他具名连接。连接中的默认模型与运行中的角色绑定分开保存。
+这是 v0.7 设置接口的公开返回对象。`api_key_configured` 只表示凭据存在，不表示已向上游验证。保存时可向自定义连接提交只写字段 `api_key` 或 `clear_api_key`；两者不写入普通设置。旧 MinerU 设置保留为历史配置，不进入当前接口。当前 UI 编辑上述两个连接；后端可保存其他具名连接。连接中的默认模型与运行中的角色绑定分开保存。
 
 ## 调用约束与验证状态
 

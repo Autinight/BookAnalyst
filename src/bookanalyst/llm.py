@@ -130,6 +130,18 @@ class Providers:
             raise WorkflowError("CONFIG_REQUIRED", "模型连接不存在或未启用", 422)
         return conn
 
+    def api_key(self, connection_id, conn):
+        try:
+            # An explicitly cleared credential suppresses the old environment fallback.
+            return self.store.get("credential", connection_id)["api_key"]
+        except WorkflowError as e:
+            if e.code != "NOT_FOUND":
+                raise
+        name = conn.get(
+            "api_key_env", "LLM_CUSTOM_API_KEY" if connection_id == "custom_api" else ""
+        )
+        return secret(self.workspace, name) if name else ""
+
     async def status(self, connection_id):
         conn = self.connection(connection_id)
         if conn["kind"] == "codex_chatgpt":
@@ -153,9 +165,7 @@ class Providers:
                     "models": [],
                     "message": "官方运行时状态读取失败；请检查 SDK 与登录状态",
                 }
-        ready = conn["auth_mode"] == "none" or bool(
-            secret(self.workspace, conn["api_key_env"])
-        )
+        ready = conn["auth_mode"] == "none" or bool(self.api_key(connection_id, conn))
         return {
             "status": "CONFIGURED_UNTESTED" if ready else "AUTH_REQUIRED",
             "models": [
@@ -217,8 +227,8 @@ class Providers:
                 raise WorkflowError(
                     "CAPABILITY_UNSUPPORTED", "自定义模型图像能力尚未确认", 422
                 )
-            if conn["auth_mode"] == "bearer" and not secret(
-                self.workspace, conn["api_key_env"]
+            if conn["auth_mode"] == "bearer" and not self.api_key(
+                binding["connection_id"], conn
             ):
                 raise WorkflowError("AUTH_REQUIRED", "请配置自定义 API 凭据", 422)
         return dict(binding, model_id=model_id), conn
@@ -542,8 +552,8 @@ class Providers:
     async def _custom(self, conn, binding, prompt, schema, images):
         headers = {}
         if conn["auth_mode"] == "bearer":
-            headers["Authorization"] = "Bearer " + secret(
-                self.workspace, conn["api_key_env"]
+            headers["Authorization"] = "Bearer " + self.api_key(
+                binding["connection_id"], conn
             )
         image_urls = [
             "data:image/png;base64," + base64.b64encode(p.read_bytes()).decode()

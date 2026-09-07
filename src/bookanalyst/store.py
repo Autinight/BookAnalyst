@@ -91,6 +91,19 @@ class Store:
             )
         return value
 
+    def save_settings(self, value, credentials):
+        with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute(
+                "INSERT OR REPLACE INTO objects VALUES(?,?,?)",
+                ("settings", "main", encode(value)),
+            )
+            for name, key in credentials.items():
+                db.execute(
+                    "INSERT OR REPLACE INTO objects VALUES(?,?,?)",
+                    ("credential", name, encode({"api_key": key})),
+                )
+
     def list(self, kind, limit=100):
         with self.connection() as db:
             return [

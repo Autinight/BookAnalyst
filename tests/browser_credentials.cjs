@@ -1,0 +1,42 @@
+const { chromium } = require(process.env.BOOKANALYST_PLAYWRIGHT || 'playwright');
+const fs = require('fs');
+(async () => {
+  const browser = await chromium.launch({ channel:'msedge', headless:true });
+  const page = await browser.newPage({viewport:{width:1440,height:1000}});
+  const failures=[];page.on('pageerror',e=>failures.push(e.message));
+  const base=process.env.BOOKANALYST_CREDENTIAL_TEST_URL || 'http://127.0.0.1:8767';
+  const key='test-ui-key-'+Date.now();
+  try {
+    await page.goto(base,{waitUntil:'networkidle'});
+    await page.locator('[data-nav="settings"]').click();
+    const input=page.locator('[name="custom_key"]');
+    await input.waitFor();
+    if(await page.locator('[name="custom_env"]').count())throw Error('Environment-name input still present');
+    if(await input.getAttribute('type')!=='password')throw Error('Secret is visible');
+    await input.fill(key);
+    let saved=page.waitForResponse(r=>r.url()===base+'/api/settings' && r.request().method()==='PUT');
+    await page.getByRole('button',{name:'保存连接',exact:true}).click();
+    let response=await saved;
+    if(!response.ok() || (await response.text()).includes(key))throw Error('Save failed or exposed key');
+    await page.waitForFunction(()=>document.querySelector('[name="custom_key"]').value==='');
+    if(!await input.getAttribute('placeholder').then(x=>x.includes('已配置')))throw Error('Missing configured indicator');
+    saved=page.waitForResponse(r=>r.url()===base+'/api/settings' && r.request().method()==='PUT');
+    await page.getByRole('button',{name:'保存连接',exact:true}).click();
+    response=await saved;
+    if(!(await response.json()).connections.custom_api.api_key_configured)throw Error('Blank erased key');
+    await page.reload({waitUntil:'networkidle'});
+    await page.locator('[data-nav="settings"]').click();
+    await input.waitFor();
+    if(await input.inputValue()!=='')throw Error('Reload filled secret');
+    if((await page.locator('body').innerHTML()).includes(key))throw Error('Secret in rendered markup');
+    await page.screenshot({path:'.bookanalyst/credentials-settings.png',fullPage:true});
+    await page.locator('[name="custom_clear"]').check();
+    saved=page.waitForResponse(r=>r.url()===base+'/api/settings' && r.request().method()==='PUT');
+    await page.getByRole('button',{name:'保存连接',exact:true}).click();
+    response=await saved;
+    if((await response.json()).connections.custom_api.api_key_configured)throw Error('Clear failed');
+    if(failures.length)throw Error(failures.join('\n'));
+    fs.writeFileSync('.bookanalyst/credentials-browser-report.json',JSON.stringify({passwordInput:true,save:true,blankPreserves:true,reloadHidden:true,clear:true,errors:failures},null,2));
+    console.log('Credential UI: password input, save, blank preservation, reload hiding and clear passed.');
+  } finally {await browser.close();}
+})().catch(e=>{console.error(e);process.exitCode=1;});

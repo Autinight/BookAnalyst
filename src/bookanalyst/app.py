@@ -9,7 +9,7 @@ from fastapi import FastAPI, Request, UploadFile, File, Query
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
-from .config import DEFAULT_SETTINGS, validate_settings
+from .config import DEFAULT_SETTINGS, prepare_settings
 from .store import Store, WorkflowError
 from .models import RunCreate, Operation, STAGES, STAGE_NAMES, WORKFLOW_VERSION
 from .llm import Providers
@@ -103,13 +103,25 @@ def create_app(workspace=None, data_dir=None):
             "stages": dict(zip(STAGES, STAGE_NAMES)),
         }
 
+    def public_settings():
+        value = store.get("settings", "main")
+        for name, conn in value["connections"].items():
+            if conn["kind"] == "openai_compatible":
+                conn["api_key_configured"] = bool(providers.api_key(name, conn))
+                conn.pop("api_key_env", None)
+        return value
+
     @app.get("/api/settings")
     async def settings():
-        return store.get("settings", "main")
+        return public_settings()
 
     @app.put("/api/settings")
     async def save_settings(request: Request):
-        return store.put("settings", "main", validate_settings(await request.json()))
+        value, credentials = prepare_settings(
+            await request.json(), store.get("settings", "main")
+        )
+        store.save_settings(value, credentials)
+        return public_settings()
 
     @app.get("/api/connections/{cid}/status")
     async def connection(cid: str):
