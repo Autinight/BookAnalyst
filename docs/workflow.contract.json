@@ -1,159 +1,57 @@
 {
-  "schema_version": "0.5",
+  "schema_version": "0.6",
   "status": "implemented",
-  "specification": "workflow.md",
+  "specification": "workflow-v0.6.md",
   "stage_order": [
-    "S0",
-    "S1",
-    "S2",
-    "S3",
-    "S4",
-    "S5",
-    "S6",
-    "S7",
-    "S8"
+    "setup",
+    "style",
+    "convert",
+    "seams",
+    "headings"
   ],
-  "note": "阶段号是程序检查点，不代表九轮模型处理。S4/S5 和 S8 均无模型请求。",
   "stages": [
     {
-      "id": "S0",
-      "name": "登记与能力检查",
-      "participants": [
-        "PROGRAM"
-      ],
-      "gates": [
-        "G00"
-      ],
-      "action": "验证来源、页数范围和本次实际使用模型的能力"
-    },
-    {
-      "id": "S1",
-      "name": "MinerU 解析与聚合",
+      "id": "setup",
       "participants": [
         "PROGRAM",
-        "MINERU"
-      ],
-      "gates": [
-        "G10",
-        "G11"
-      ],
-      "action": "按服务上限粗分 PDF，聚合保留原始 JSON；可复用相同来源解析"
-    },
-    {
-      "id": "S2",
-      "name": "全书 type 过滤",
-      "participants": [
-        "PROGRAM",
-        "LLM_ANALYST"
-      ],
-      "gates": [
-        "G20",
-        "G21"
-      ],
-      "action": "一次 type 决策，由程序统一过滤；不逐块分析或纠错"
-    },
-    {
-      "id": "S3",
-      "name": "全书设置",
-      "participants": [
-        "PROGRAM",
-        "LLM_ANALYST"
-      ],
-      "gates": [
-        "G30"
-      ],
-      "action": "依据目录、标题索引与少量正文确定标题和编号偏好"
-    },
-    {
-      "id": "S4",
-      "name": "固定公共 TeX 样式",
-      "participants": [
-        "PROGRAM"
-      ],
-      "gates": [
-        "G40"
-      ],
-      "action": "冻结公共模板、显式作者编号及全书配置哈希，无模型调用"
-    },
-    {
-      "id": "S5",
-      "name": "按页分批",
-      "participants": [
-        "PROGRAM"
-      ],
-      "gates": [
-        "G50"
-      ],
-      "action": "每批包含指定物理页的全部保留块；邻页不预加载"
-    },
-    {
-      "id": "S6",
-      "name": "并行转换与按需修复",
-      "participants": [
-        "PROGRAM",
-        "LLM_CONVERTER"
-      ],
-      "gates": [
-        "G60"
-      ],
-      "action": "直接结合原图转换纠错；按需查询前后一页；可选逐批独立审查"
-    },
-    {
-      "id": "S7",
-      "name": "合并与编译",
-      "participants": [
-        "PROGRAM"
-      ],
-      "gates": [
-        "G70",
-        "G71"
-      ],
-      "action": "延续跨批环境并编译；缺字视为错误，按真实 TeX 行号定位；独立缺字问题并行回送所属批次，环境依赖修复按序进行",
-      "conditional_participants": [
-        "LLM_CONVERTER"
+        "VISION_LLM"
       ]
     },
     {
-      "id": "S8",
-      "name": "保存结果",
+      "id": "style",
       "participants": [
         "PROGRAM"
-      ],
-      "gates": [
-        "G80"
-      ],
-      "action": "校验产物完整性并如实记录审查方式和证据范围"
+      ]
+    },
+    {
+      "id": "convert",
+      "participants": [
+        "PROGRAM",
+        "VISION_LLM"
+      ]
+    },
+    {
+      "id": "seams",
+      "participants": [
+        "PROGRAM",
+        "VISION_LLM"
+      ]
+    },
+    {
+      "id": "headings",
+      "participants": [
+        "LLM",
+        "PROGRAM"
+      ]
     }
   ],
   "defaults": {
-    "pages_per_task": 2,
+    "pages_per_task": 3,
     "llm_concurrency": 2,
-    "review_mode": "on_demand",
-    "max_llm_requests": null,
-    "repair_rounds_per_task": 2
+    "reasoning_effort": "medium"
   },
-  "conversion": {
-    "ownership": "all_KEEP_blocks_on_owned_physical_PDF_pages",
-    "context": "query_only_immediately_previous_or_next_page_outside_batch",
-    "context_is_read_only": true,
-    "images": "original_PDF_owned_block_regions",
-    "review_modes": [
-      "on_demand",
-      "all"
-    ],
-    "all_mode": "one_independent_review_per_completed_candidate",
-    "cross_batch_environments": "program_carries_stack",
-    "numbering": "explicit_author_labels",
-    "application_context_limit": false,
-    "application_output_token_limit": false
-  },
-  "recovery": {
-    "passed_tasks": "reuse_only_matching_inputs_and_hashes",
-    "unknown_remote_outcome": "stop_and_reconcile",
-    "local_repairs": "two_completed_automatic_repair_rounds_per_task_across_stages_then_pause",
-    "manual_resume": "renew_exhausted_in_scope_tasks_by_two_rounds_keep_cumulative_counts_and_usage",
-    "old_workflow_runs": "use_original_executor_or_import_only_verified_S1_parse",
-    "confirmed_interruption": "release_incomplete_repair_round_once_keep_actual_usage",
-    "merge_checkpoint": "reuse_previous_revision_only_when_S6_input_hash_matches"
-  }
+  "context_token_gate": false,
+  "output_token_limit": null,
+  "mineru_in_main_path": false,
+  "validation": "validation-v0.6.md"
 }

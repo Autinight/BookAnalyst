@@ -1,38 +1,6 @@
 <!doctype html>
-<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>BookAnalyst · 数学书籍工作台</title><link rel="stylesheet" href="/static/style.css"><link rel="stylesheet" href="/static/vendor/katex/katex.min.css">
-<script defer src="/static/vendor/katex/katex.min.js"></script><script defer src="/static/app.js"></script></head>
-<body><aside class="sidebar"><a class="brand" href="/"><span class="brand-icon">B∫</span><span>BookAnalyst<small>数学书籍工作台</small></span></a>
-<div class="nav-caption">工作空间</div><nav aria-label="主导航">
-<button class="nav active" data-page="library"><span>▤</span>书籍</button>
-<button class="nav" data-page="runs"><span>↗</span>运行记录<span id="run-count" class="nav-count">0</span></button>
-<button class="nav" data-page="compare"><span>⊞</span>内容对照</button></nav>
-<div class="sidebar-bottom"><button class="nav" data-page="settings"><span>⚙</span>设置</button>
-<div class="local"><i></i>本地工作空间<small>PDF → 数学内容 → TeX</small></div></div></aside>
-<div class="shell"><header class="topbar"><div class="breadcrumb">工作空间 <span>/</span><strong id="page-label">书籍</strong></div>
-<div class="top-note"><span class="dot"></span>本地运行 <span class="version">v0.1</span></div></header><main id="main" aria-live="polite"></main></div>
-<dialog id="run-dialog"><form id="run-form">
-<div class="dialog-header"><div><span class="eyebrow">NEW RUN</span><h2>创建转换运行</h2></div><button type="button" class="icon-button" id="close-dialog" aria-label="关闭">×</button></div>
-<label>书籍<select name="book_id" id="run-book" required></select></label>
-<input name="profile" type="hidden" value="book"><input name="start_page" type="hidden" value="1"><input name="end_page" type="hidden">
-<div class="form-grid"><label>解析策略<select name="parser"><option value="cloud">MinerU 线上 API</option><option value="local">MinerU 本地服务</option></select></label>
-<label>LLM 并发数量<input name="llm_concurrency" type="number" min="1" value="2" required></label>
-<label>LLM 请求总预算<input name="max_llm_requests" type="number" min="1" placeholder="留空不限"></label>
-<label>每批处理页数<input name="pages_per_task" type="number" min="1" value="2" required></label>
-<label>内容审查<select name="review_mode"><option value="on_demand">按需处理问题</option><option value="all">逐批独立审查</option></select></label></div>
-<p id="profile-note" class="note"></p><label id="cache-field">解析结果<select name="cached_run_id" id="cached-run"><option value="">重新解析书籍</option></select></label>
-<details><summary>模型、核对范围与解析预算</summary><div class="form-grid">
-<label>视觉核对<select name="visual_mode"><option value="targeted">按转换内容附原图</option><option value="disabled">关闭</option></select></label>
-<input type="hidden" name="visual_pages" value="">
-<label>解析提交预算<input name="max_parse_submissions" type="number" min="0" value="1"></label>
-<label>累计解析页数预算<input name="max_submitted_pages" type="number" min="0" value="3"></label></div><div id="role-fields"></div></details>
-<div id="run-error" class="form-error" role="alert"></div>
-<div class="dialog-footer"><span>范围与预算将保存到本次运行</span><button type="submit" class="button primary">开始运行 <span>→</span></button></div></form></dialog>
-<dialog id="correction-dialog"><form id="correction-form">
-<div class="dialog-header"><h2>提交内容修正</h2><button class="icon-button" type="button" id="close-correction" aria-label="关闭">×</button></div>
-<p class="note">修正将作为新证据提交，重新核对原图后应用。</p>
-<label>解析原文<textarea id="correction-before" readonly rows="4"></textarea></label>
-<label>修正后内容<textarea id="correction-after" rows="5" required></textarea></label>
-<label>原图依据<textarea id="correction-evidence" rows="3" placeholder="描述原图中可见的符号及位置" minlength="3" required></textarea></label>
-<div id="correction-error" class="form-error"></div><div class="dialog-footer"><button class="button primary" type="submit">保存修正依据</button></div></form></dialog>
-<div id="toast" role="status" hidden></div><input type="file" id="pdf-upload" accept="application/pdf,.pdf" hidden></body></html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>BookAnalyst</title><link rel="stylesheet" href="/static/style.css"></head>
+<body><aside><a class="brand" href="#library"><b>Ba</b><span>BookAnalyst<small>数学内容 · 视觉转换</small></span></a><nav><button data-nav="library" class="active">书库</button><button data-nav="runs">运行记录</button><button data-nav="settings">模型连接</button></nav><footer><i></i>本地工作台 <span>v0.6</span></footer></aside>
+<div class="workspace"><header><span id="breadcrumb">书库</span><span class="muted">PDF → TeX</span></header><main id="main" aria-live="polite"><p>正在连接本地服务…</p></main></div>
+<dialog id="new-run"><form id="run-form"><div class="row"><h2>创建视觉转换</h2><button type="button" data-close class="icon" aria-label="关闭">×</button></div><label>文献<select name="book_id" required></select></label><div class="fields"><label>起始 PDF 页<input name="start_page" type="number" value="1" min="1" required></label><label>结束 PDF 页<input name="end_page" type="number" min="1" required></label><label>每批页数<input name="pages_per_task" type="number" value="3" min="1" required></label><label>并行任务数<input name="llm_concurrency" type="number" value="2" min="1" required></label><label>模型连接<select name="connection_id"></select></label><label>模型<select name="model_id"><option value="">读取上游模型…</option></select></label><label>思考强度<select name="reasoning_effort"><option value="low">低</option><option value="medium" selected>中</option><option value="high">高</option><option value="xhigh">更高</option></select></label><label>设置参考页（可选）<input name="setup_pages" placeholder="如 1,2,3；默认开头 3 页"></label></div><p class="hint">转换任务只接收本批页图。目录与前置页用于全书设置，衔接统一在转换后处理。</p><p id="run-error" class="error"></p><div class="row end"><button type="submit" class="primary">开始转换</button></div></form></dialog>
+<input id="upload" type="file" accept="application/pdf" hidden><div id="toast" role="status" hidden></div><script type="module" src="/static/app.js"></script></body></html>
