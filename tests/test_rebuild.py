@@ -199,6 +199,7 @@ async def test_five_stages_compile_and_resume_without_duplicate_requests(
                 "author": "",
                 "rules": "",
                 "toc": [],
+                "numbering": {"rules": [], "initial": []},
             }
         return result(payload["owned_pages"])
 
@@ -413,10 +414,11 @@ async def test_custom_api_sends_owned_images_without_token_limits(
     assert text == "{}" and usage["total_tokens"] == 5
     payload = captured[0]
     assert payload["model"] == "custom-vision"
-    assert not any(
-        k in payload
-        for k in ("tools", "max_tokens", "max_output_tokens", "reasoning_effort")
-    )
+    if protocol == "responses":
+        assert payload["reasoning"] == {"effort": "medium"}
+    else:
+        assert payload["reasoning_effort"] == "medium"
+    assert not any(k in payload for k in ("tools", "max_tokens", "max_output_tokens"))
     assert "data:image/png;base64,b3duZWQgcGFnZSBieXRlcw==" in json.dumps(payload)
 
 

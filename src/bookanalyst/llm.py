@@ -201,6 +201,14 @@ class Providers:
                 raise WorkflowError(
                     "CAPABILITY_UNSUPPORTED", "所选订阅模型不支持图像输入", 422
                 )
+            supported = {
+                x["reasoningEffort"]
+                for x in selected.get("supportedReasoningEfforts", [])
+            }
+            if supported and binding.get("reasoning_effort", "medium") not in supported:
+                raise WorkflowError(
+                    "EFFORT_UNSUPPORTED", "上游模型不支持所选思考强度", 422
+                )
             model_id = selected.get("model") or selected["id"]
         else:
             if not model_id:
@@ -233,7 +241,7 @@ class Providers:
                 metadata = dict(
                     role=role,
                     model_id=binding["model_id"],
-                    prompt_version="0.6.0",
+                    prompt_version="0.7.0",
                     input_hash=digest(
                         {
                             "prompt": prompt,
@@ -243,9 +251,7 @@ class Providers:
                     ),
                     purpose=purpose,
                     connection_id=binding["connection_id"],
-                    reasoning_effort=binding.get("reasoning_effort", "medium")
-                    if conn["kind"] == "codex_chatgpt"
-                    else None,
+                    reasoning_effort=binding.get("reasoning_effort", "medium"),
                 )
                 # A completed upstream response can exist before the engine checkpoint.
                 # Reuse that receipt after an interrupted process instead of paying twice.
@@ -559,6 +565,7 @@ class Providers:
                 ],
                 "stream": False,
             }
+            payload["reasoning_effort"] = binding.get("reasoning_effort", "medium")
             endpoint = "/chat/completions"
         else:
             content = [{"type": "input_text", "text": prompt}] + [
@@ -571,6 +578,7 @@ class Providers:
                 "stream": False,
                 "store": False,
             }
+            payload["reasoning"] = {"effort": binding.get("reasoning_effort", "medium")}
             endpoint = "/responses"
         async with httpx.AsyncClient(
             timeout=conn["timeout_seconds"], transport=self.transport

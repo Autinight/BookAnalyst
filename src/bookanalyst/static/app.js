@@ -187,8 +187,7 @@ async function models(cid) {
   const preferred = settings.connections[cid]?.model_id;
   if ([...select.options].some((o) => o.value === preferred))
     select.value = preferred;
-  $("#run-form").elements.reasoning_effort.disabled =
-    settings.connections[cid]?.kind !== "codex_chatgpt";
+
   if (!status.models.length)
     select.innerHTML = '<option value="">请先配置有效模型连接</option>';
   return status;
@@ -332,7 +331,8 @@ $("#run-form").onsubmit = async (event) => {
           model_id: f.get("model_id"),
           reasoning_effort: f.get("reasoning_effort") || "medium",
         },
-        setup_pages: String(f.get("setup_pages"))
+        structure_effort: f.get("structure_effort") || "xhigh",
+      setup_pages: String(f.get("setup_pages"))
           .split(/[,，\s]+/)
           .filter(Boolean)
           .map(Number),

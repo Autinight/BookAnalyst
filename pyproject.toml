@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bookanalyst"
-version = "0.6.0"
+version = "0.7.0"
 description = "Local visual mathematical PDF to LaTeX workbench"
 requires-python = ">=3.12"
 dependencies = [

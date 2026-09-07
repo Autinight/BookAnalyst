@@ -3,13 +3,14 @@
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+WORKFLOW_VERSION = "0.7"
 STAGES = ["setup", "style", "convert", "seams", "headings"]
 STAGE_NAMES = [
-    "全书设置",
+    "全书设置与计数规则",
     "固定公共 TeX 样式",
     "分批视觉转换",
     "页面衔接",
-    "标题层级与编译",
+    "标题、标签与引用",
 ]
 
 
@@ -31,6 +32,7 @@ class RunCreate(StrictModel):
     llm_concurrency: int = Field(2, ge=1)
     setup_pages: list[int] = Field(default_factory=list)
     model: Binding = Field(default_factory=Binding)
+    structure_effort: Literal["high", "xhigh"] = "xhigh"
 
     @model_validator(mode="after")
     def pages(self):

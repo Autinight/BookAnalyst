@@ -3,7 +3,7 @@
 import copy, hashlib, json, os, sqlite3, threading, time, uuid
 from pathlib import Path
 from contextlib import contextmanager
-from .models import STAGES
+from .models import STAGES, WORKFLOW_VERSION
 
 
 class WorkflowError(Exception):
@@ -109,7 +109,7 @@ class Store:
             revision=1,
             created_at=now,
             updated_at=now,
-            workflow_version="0.6",
+            workflow_version=WORKFLOW_VERSION,
             state="PENDING",
             config=config,
             source=book,
@@ -191,7 +191,7 @@ class Store:
         ]
 
     def summary(self, run):
-        old = run.get("workflow_version") != "0.6"
+        old = run.get("workflow_version") != WORKFLOW_VERSION
         return {
             k: run.get(k)
             for k in (
@@ -256,7 +256,10 @@ class Store:
 
     def recover(self):
         for run in self.list("run", 10000):
-            if run.get("workflow_version") == "0.6" and run["state"] == "RUNNING":
+            if (
+                run.get("workflow_version") == WORKFLOW_VERSION
+                and run["state"] == "RUNNING"
+            ):
                 self.change(
                     run["id"],
                     lambda r: r.update(
@@ -271,4 +274,5 @@ class Store:
     def directory(self, rid):
         if len(rid) != 32 or any(c not in "0123456789abcdef" for c in rid):
             raise WorkflowError("INVALID_PATH", "运行 ID 无效")
-        return self.root / "runs" / rid / "v6"
+        version = self.get("run", rid).get("workflow_version")
+        return self.root / "runs" / rid / ("v6" if version == "0.6" else "v7")

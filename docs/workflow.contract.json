@@ -1,7 +1,7 @@
 {
-  "schema_version": "0.6",
+  "schema_version": "0.7",
   "status": "implemented",
-  "specification": "workflow-v0.6.md",
+  "specification": "workflow-v0.7.md",
   "stage_order": [
     "setup",
     "style",
@@ -48,10 +48,17 @@
   "defaults": {
     "pages_per_task": 3,
     "llm_concurrency": 2,
-    "reasoning_effort": "medium"
+    "reasoning_effort": "medium",
+    "structure_effort": "xhigh"
   },
   "context_token_gate": false,
   "output_token_limit": null,
   "mineru_in_main_path": false,
-  "validation": "validation-v0.6.md"
+  "validation": "validation-v0.7.md",
+  "numbering": {
+    "visible": "native_counters",
+    "label_key": "kind:source_number[:scope]",
+    "worker_reference": "native_ref_or_eqref",
+    "dedicated_reference_stage": false
+  }
 }

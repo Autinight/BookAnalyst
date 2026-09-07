@@ -11,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from .config import DEFAULT_SETTINGS, validate_settings
 from .store import Store, WorkflowError
-from .models import RunCreate, Operation, STAGES, STAGE_NAMES
+from .models import RunCreate, Operation, STAGES, STAGE_NAMES, WORKFLOW_VERSION
 from .llm import Providers
 from .engine import Engine
 from .pdf import inspect_pdf
@@ -51,7 +51,7 @@ def create_app(workspace=None, data_dir=None):
         yield
         await engine.close()
 
-    app = FastAPI(title="BookAnalyst", version="0.6.0", lifespan=lifespan)
+    app = FastAPI(title="BookAnalyst", version="0.7.0", lifespan=lifespan)
     app.state.store = store
     app.state.engine = engine
     app.state.workspace = workspace
@@ -97,7 +97,7 @@ def create_app(workspace=None, data_dir=None):
     async def bootstrap():
         return {
             "token": token,
-            "version": "0.6.0",
+            "version": "0.7.0",
             "books": books(),
             "runs": [store.summary(r) for r in store.list("run")],
             "stages": dict(zip(STAGES, STAGE_NAMES)),
@@ -190,7 +190,7 @@ def create_app(workspace=None, data_dir=None):
     @app.get("/api/runs/{rid}/content")
     async def content(rid: str, page: int = Query(1, ge=1)):
         run = store.get("run", rid)
-        if run.get("workflow_version") != "0.6":
+        if run.get("workflow_version") != WORKFLOW_VERSION:
             return {"legacy": True, "tex": "", "page": page}
         task = next(
             (t for t in store.tasks(rid, "convert") if page in t["pages"]), None
@@ -271,7 +271,7 @@ def create_app(workspace=None, data_dir=None):
         return {"total": len(calls), "purposes": totals, "rows": rows, "tokens": actual}
 
     def output_dir(run):
-        if run.get("workflow_version") == "0.6":
+        if run.get("workflow_version") in ("0.6", WORKFLOW_VERSION):
             return store.directory(run["id"]) / "tex"
         root = store.root / "runs" / run["id"]
         paths = list(root.glob("r*/S7/tex/main.tex")) + list(
@@ -284,7 +284,10 @@ def create_app(workspace=None, data_dir=None):
     @app.get("/api/runs/{rid}/pdf")
     async def result_pdf(rid: str):
         run = store.get("run", rid)
-        if run.get("workflow_version") == "0.6" and run["state"] != "COMPLETED":
+        if (
+            run.get("workflow_version") in ("0.6", WORKFLOW_VERSION)
+            and run["state"] != "COMPLETED"
+        ):
             raise WorkflowError("NOT_COMPLETE", "当前编译尚未通过")
         path = output_dir(run) / "main.pdf"
         if not path.exists():

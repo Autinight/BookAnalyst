@@ -14,7 +14,7 @@ const fs = require("fs");
   const base = process.env.BOOKANALYST_URL || "http://127.0.0.1:8766";
   const rid =
     process.env.BOOKANALYST_RUN ||
-    JSON.parse(fs.readFileSync("tmp/v6-real-run.json", "utf8")).id;
+    JSON.parse(fs.readFileSync("tmp/v7-full-run.json", "utf8")).id;
   try {
     await page.goto(base, { waitUntil: "networkidle" });
     await page.getByRole("heading", { name: "书库", exact: true }).waitFor();
@@ -33,6 +33,8 @@ const fs = require("fs");
       "medium"
     )
       throw Error("Effort control");
+    if ((await page.locator('[name="structure_effort"]').inputValue()) !== "xhigh")
+      throw Error("Structure effort default");
     if (await page.locator('[name$="_context"],[name$="_output"]').count())
       throw Error("Removed token fields present");
     await page.locator("[data-close]").click();
