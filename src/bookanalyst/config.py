@@ -7,8 +7,13 @@ from urllib.parse import urlparse
 from dotenv import dotenv_values
 
 from .store import WorkflowError
+from .model_config import MODEL_STAGES, settings_models
+from .models import Binding
+from pydantic import ValidationError
 
 DEFAULT_SETTINGS = {
+    "stage_models": {},
+    "llm_concurrency": 2,
     "default_connection": "openai_subscription",
     "connections": {
         "openai_subscription": {
@@ -91,12 +96,30 @@ def validate_settings(value):
                 raise WorkflowError("INVALID_CONFIG", "凭据必须填写环境变量名称", 422)
     if value["default_connection"] not in value["connections"]:
         raise WorkflowError("INVALID_CONFIG", "默认连接不存在", 422)
+    if type(value["llm_concurrency"]) is not int or value["llm_concurrency"] < 1:
+        raise WorkflowError("INVALID_CONFIG", "并行任务数必须为正整数", 422)
+    bindings = value["stage_models"]
+    if not isinstance(bindings, dict) or set(bindings) != set(MODEL_STAGES):
+        raise WorkflowError("INVALID_CONFIG", "请完整设置各阶段的模型配置", 422)
+    for stage, binding in bindings.items():
+        try:
+            binding = Binding.model_validate(binding).model_dump()
+        except ValidationError as exc:
+            raise WorkflowError("INVALID_CONFIG", f"{MODEL_STAGES[stage]}的模型配置无效", 422) from exc
+        conn = value["connections"].get(binding["connection_id"])
+        if not conn or not conn.get("enabled"):
+            raise WorkflowError("INVALID_CONFIG", f"{MODEL_STAGES[stage]}请选择已启用的连接", 422)
+        bindings[stage] = binding
     return value
 
 
 def prepare_settings(value, previous):
     """Validate everything before atomically saving settings and private credentials."""
     value = copy.deepcopy(value)
+    value.setdefault("stage_models", settings_models(previous))
+    value.setdefault("llm_concurrency", previous.get("llm_concurrency", 2))
+    if not value["stage_models"]:
+        value["stage_models"] = settings_models(value)
     credentials = {}
     for name, conn in value.get("connections", {}).items():
         if conn.get("kind") != "openai_compatible":

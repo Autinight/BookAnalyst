@@ -23,6 +23,7 @@ temp/
 
 # Python and local application state
 .venv/
+node_modules/
 __pycache__/
 *.py[cod]
 *.egg-info/
@@ -30,3 +31,6 @@ __pycache__/
 .bookanalyst/
 build/
 dist/
+
+# Generated outputs
+output/

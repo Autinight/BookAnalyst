@@ -14,3 +14,5 @@ powershell -File scripts/start.ps1 -Port 8766
 vLLM 作为独立的自定义 API 服务接入。填写实际 API 根地址、模型 ID、协议和鉴权方式，并确认多模态输入能力。BookAnalyst 不加载本地模型权重，也不在启动时下载模型。真实本机 vLLM 部署尚未验证。
 
 v0.6 主流程不使用 MinerU，不需要为启动工作台部署 MinerU。旧凭据和历史解析缓存仍保存在本地。
+
+自定义 API 最终编译还需 Node.js 22.19+；在项目根目录运行 `npm ci --prefix src/bookanalyst/pi_runtime --ignore-scripts`。依赖固定为 pi.dev 官方 `@earendil-works/pi-coding-agent` 0.85.1，Python 安装包包含运行入口和锁文件，Node 依赖需另外安装。官方订阅继续使用 Codex SDK。

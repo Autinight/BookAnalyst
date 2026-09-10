@@ -7,7 +7,9 @@
     "style",
     "convert",
     "seams",
-    "headings"
+    "headings",
+    "references",
+    "finish"
   ],
   "stages": [
     {
@@ -43,6 +45,20 @@
         "LLM",
         "PROGRAM"
       ]
+    },
+    {
+      "id": "references",
+      "participants": [
+        "LLM",
+        "PROGRAM"
+      ]
+    },
+    {
+      "id": "finish",
+      "participants": [
+        "LLM",
+        "PROGRAM"
+      ]
     }
   ],
   "defaults": {
@@ -59,6 +75,6 @@
     "visible": "native_counters",
     "label_key": "kind:source_number[:scope]",
     "worker_reference": "native_ref_or_eqref",
-    "dedicated_reference_stage": false
+    "dedicated_reference_stage": true
   }
 }

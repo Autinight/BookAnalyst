@@ -7,13 +7,14 @@ from .models import STAGES, WORKFLOW_VERSION
 
 
 class WorkflowError(Exception):
-    def __init__(self, code, message, status=409, review=False):
+    def __init__(self, code, message, status=409, review=False, retryable=False):
         super().__init__(message)
-        self.code, self.message, self.status, self.review = (
+        self.code, self.message, self.status, self.review, self.retryable = (
             code,
             message,
             status,
             review,
+            retryable,
         )
 
 
@@ -53,6 +54,7 @@ class Store:
         self.root.mkdir(parents=True, exist_ok=True)
         self.db = self.root / "bookanalyst.sqlite3"
         self.lock = threading.RLock()
+        self.output_lock = threading.Lock()
         with self.connection() as db:
             db.executescript("""PRAGMA journal_mode=WAL;
             CREATE TABLE IF NOT EXISTS objects(kind TEXT,id TEXT,payload TEXT,PRIMARY KEY(kind,id));
@@ -90,6 +92,17 @@ class Store:
                 (kind, key, encode(value)),
             )
         return value
+
+    def update_book(self, key, **changes):
+        with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT payload FROM objects WHERE kind='book' AND id=?", (key,)).fetchone()
+            if not row:
+                raise WorkflowError("NOT_FOUND", "书籍不存在", 404)
+            book = json.loads(row[0])
+            book.update(changes, updated_at=time.time())
+            db.execute("UPDATE objects SET payload=? WHERE kind='book' AND id=?", (encode(book), key))
+        return book
 
     def save_settings(self, value, credentials):
         with self.connection() as db:
@@ -166,7 +179,7 @@ class Store:
             db.execute("BEGIN IMMEDIATE")
             return self._change(db, rid, callback, revision)
 
-    def operation(self, rid, command, callback):
+    def operation(self, rid, command, callback, *, abandon_unknown=False):
         with self.connection() as db:
             db.execute("BEGIN IMMEDIATE")
             row = db.execute(
@@ -176,6 +189,23 @@ class Store:
             if row:
                 return json.loads(row[0])
             result = self._change(db, rid, callback, command.revision)
+            if abandon_unknown:
+                calls = db.execute(
+                    "SELECT id,state,metadata FROM calls WHERE run_id=? AND state IN ('RESERVED','RESULT_UNKNOWN')",
+                    (rid,),
+                ).fetchall()
+                for call in calls:
+                    metadata = json.loads(call["metadata"]) | {
+                        "previous_state": call["state"],
+                        "upstream_outcome": "unknown",
+                        "retry_authorized": True,
+                        "retry_authorized_at": time.time(),
+                        "retry_operation_id": command.operation_id,
+                    }
+                    db.execute(
+                        "UPDATE calls SET state='ABANDONED',metadata=? WHERE id=?",
+                        (encode(metadata), call["id"]),
+                    )
             db.execute(
                 "INSERT INTO operations VALUES(?,?,?)",
                 (rid, command.operation_id, encode(result)),
@@ -215,16 +245,24 @@ class Store:
                 "state",
                 "usage",
                 "error",
+                "retention_error",
             )
         } | {
             "title": run["source"]["title"],
             "book_id": run["source"]["id"],
+            "kind": run.get("kind", "conversion"),
+            "template": run.get("template"),
             "legacy": old,
             "pages": [run["config"]["start_page"], run["config"]["end_page"]],
             "stage": run.get("stage"),
             "stages": run.get("stages") if not old else {},
             "pages_per_task": run["config"].get("pages_per_task"),
             "concurrency": run["config"]["llm_concurrency"],
+            "model": run["config"].get("model"),
+            "structure_effort": run["config"].get("structure_effort"),
+            "stage_models": run["config"].get("stage_models"),
+            "model_refresh_pending": run.get("model_refresh_pending", False),
+            "model_settings_updated_at": run.get("model_settings_updated_at"),
         }
 
     def reserve(self, rid, revision, kind, units, metadata):
@@ -235,7 +273,6 @@ class Store:
                 db,
                 rid,
                 lambda r: r["usage"].update(llm=r["usage"].get("llm", 0) + 1),
-                revision,
             )
             db.execute(
                 "INSERT INTO calls VALUES(?,?,?,?,?,?,?)",

@@ -1,5 +1,6 @@
 """Native counters and cross-batch references, verified with actual XeLaTeX."""
 
+import json
 import shutil
 import pytest
 from bookanalyst.documents import (
@@ -16,7 +17,6 @@ from bookanalyst.numbering import (
     apply_symbol_edits,
     counter_preamble,
     validate_numbering,
-    numbering_report,
 )
 from bookanalyst.models import RunCreate, STAGES
 from bookanalyst.store import WorkflowError
@@ -97,14 +97,13 @@ async def test_native_labels_share_counters_reset_and_resolve_forward_refs(tmp_p
         (tmp_path / name).write_text(text, encoding="utf-8")
     report = await compile_tex(tmp_path)
     assert report["status"] == "PASSED", report
-    numbers = numbering_report((tmp_path / "main.aux").read_text(), index)
-    assert not numbers["mismatches"], numbers
-    actual = {t["label"]: t["rendered"] for t in numbers["targets"]}
-    assert (
-        actual["theorem:1.1"] == "1.1"
-        and actual["lemma:1.2"] == "1.2"
-        and actual["theorem:2.1"] == "2.1"
-    )
+    aux = (tmp_path / "main.aux").read_text()
+    for key, number in [
+        ("theorem:1.1", "1.1"),
+        ("lemma:1.2", "1.2"),
+        ("theorem:2.1", "2.1"),
+    ]:
+        assert "\\newlabel{" + key + "}{{" + number + "}" in aux
     # Inserting a theorem changes the rendered counter without changing a label key.
     path = tmp_path / "body.tex"
     path.write_text(
@@ -113,11 +112,7 @@ async def test_native_labels_share_counters_reset_and_resolve_forward_refs(tmp_p
         )
     )
     assert (await compile_tex(tmp_path))["status"] == "PASSED"
-    numbers = numbering_report((tmp_path / "main.aux").read_text(), index)
-    assert (
-        next(t["rendered"] for t in numbers["targets"] if t["label"] == "lemma:1.2")
-        == "1.3"
-    )
+    assert r"\newlabel{lemma:1.2}{{1.3}" in (tmp_path / "main.aux").read_text()
 
 
 @pytest.mark.parametrize(
@@ -144,8 +139,9 @@ def test_native_names_survive_batch_namespace_and_seam():
         "assets",
         "head",
         "tail",
+        "unclosed_environments",
     }
-    assert STAGES == ["setup", "style", "convert", "seams", "headings"]
+    assert STAGES == ["setup", "style", "convert", "seams", "headings", "references", "finish"]
 
 
 def test_repeated_local_numbers_are_disambiguated_by_occurrence_and_scope():
@@ -186,6 +182,66 @@ def test_repeated_local_numbers_are_disambiguated_by_occurrence_and_scope():
     edits["label_edits"][0]["key"] = "lemma:2:section-1"
     with pytest.raises(WorkflowError, match="原书"):
         apply_symbol_edits(results, heads, edits)
+
+
+@pytest.mark.asyncio
+async def test_references_request_omits_unique_labels(app, monkeypatch):
+    engine = app.state.engine
+    store = app.state.store
+    run = store.create_run(
+        RunCreate(
+            book_id="wang-2022-g-invariant-min-max",
+            end_page=3,
+            model={"model_id": "test-model"},
+        ).model_dump(),
+        store.get("book", "wang-2022-g-invariant-min-max"),
+    )
+    run["config"]["resolved"] = True
+    store.put("run", run["id"], run)
+    results = [
+        batch(
+            1,
+            r"\BAHeading{h1}\begin{lemma}\label{lemma:1}A.\end{lemma}",
+            [heading("h1", 1, "1")],
+        ),
+        batch(
+            2,
+            r"\BAHeading{h2}\begin{lemma}\label{lemma:1}B.\end{lemma} Here \ref{lemma:1}.",
+            [heading("h2", 2, "2")],
+        ),
+        batch(
+            3,
+            r"\BAHeading{h3}\begin{theorem}\label{theorem:1}Unique.\end{theorem} See \ref{theorem:1}.",
+            [heading("h3", 3, "3")],
+        ),
+    ]
+    captured = []
+
+    async def generate(run, role, purpose, prompt, schema, images=()):
+        captured.append(json.loads(prompt))
+        return {
+            "label_edits": [
+                {"id": "p1-label-0", "key": "lemma:1:section-1"},
+                {"id": "p2-label-0", "key": "lemma:1:section-2"},
+            ],
+            "reference_edits": [{"id": "p2-reference-0", "key": "lemma:1:section-2"}],
+        }
+
+    monkeypatch.setattr(engine.providers, "generate", generate)
+    setup = {
+        "toc": [],
+        "rules": "",
+        "numbering": {"rules": [], "initial": []},
+        "documentclass": "article",
+    }
+    heads = [h for result in results for h in result["headings"]]
+    await engine.references(store.get("run", run["id"]), results, heads, setup)
+    payload = captured[0]
+    assert {t["key"] for t in payload["targets"]} == {"lemma:1"}
+    assert all(t["key"] != "theorem:1" for t in payload["targets"])
+    assert payload["duplicate_labels"] == ["lemma:1"]
+    assert [r["key"] for r in payload["references_to_check"]] == ["lemma:1"]
+    assert "complete label catalog" in payload["instruction"]
 
 
 def test_index_ignores_comments_and_retains_exact_edit_offsets():
@@ -247,7 +303,9 @@ async def test_structure_roles_dispatch_xhigh_and_do_not_mutate_conversion_bindi
         "convert",
         "seams",
         "headings",
+        "references",
         "counter_repair",
+        "compile_repair",
     ]:
         await engine.ask(run, purpose, purpose, {"purpose": purpose}, Numbering, [])
     assert dict(seen) == {
@@ -255,7 +313,9 @@ async def test_structure_roles_dispatch_xhigh_and_do_not_mutate_conversion_bindi
         "convert": "medium",
         "seams": "medium",
         "headings": "xhigh",
+        "references": "xhigh",
         "counter_repair": "xhigh",
+        "compile_repair": "xhigh",
     }
     assert run["config"]["model"]["reasoning_effort"] == "medium"
 
@@ -303,6 +363,7 @@ async def test_invalid_setup_rule_can_be_retried_without_reusing_invalid_cache(
             rules = [rule("theorem", shared_with="lemma")] if len(seen) == 1 else []
             return dict(
                 documentclass="article",
+                public_tex="",
                 title="",
                 author="",
                 rules="",
@@ -325,13 +386,8 @@ async def test_invalid_setup_rule_can_be_retried_without_reusing_invalid_cache(
     monkeypatch.setattr(engine, "compile", compile)
     store.change(run["id"], lambda r: r.update(state="RUNNING"))
     await engine.execute(run["id"])
-    assert store.get("run", run["id"])["error"]["code"] == "COUNTER_RULE"
-    store.change(
-        run["id"], lambda r: r.update(state="RUNNING", revision=r["revision"] + 1)
-    )
-    await engine.execute(run["id"])
     assert store.get("run", run["id"])["state"] == "COMPLETED"
-    assert len(seen) == 2 and seen[1]["retry"]["error"]
+    assert len(seen) == 2 and seen[1]["repair_feedback"]["code"] == "COUNTER_RULE"
 
 
 @pytest.mark.asyncio
@@ -365,7 +421,7 @@ async def test_structure_selected_appendix_switch_uses_native_counters(tmp_path)
         (tmp_path / name).write_text(text, encoding="utf-8")
     report = await compile_tex(tmp_path)
     assert report["status"] == "PASSED", report
-    numbers = numbering_report(
-        (tmp_path / "main.aux").read_text(), collect_symbols(results, heads)
-    )
-    assert not numbers["mismatches"], numbers
+    aux = (tmp_path / "main.aux").read_text()
+    assert r"\newlabel{section:A}{{A}" in aux
+    assert r"\newlabel{equation:A.1}{{A.1}" in aux
+    assert r"\newlabel{lemma:B.1}{{B.1}" in aux

@@ -1,5 +1,7 @@
 import { api, setToken, escape as e } from "./api.js";
 import * as views from "./views.js";
+import * as templateUI from "./templates.js";
+import { loadStageModelChoices, readStageModels, stageConnectionChanged } from "./stage-models.js";
 const $ = (s) => document.querySelector(s);
 let data,
   settings,
@@ -9,6 +11,9 @@ let data,
   routeVersion = 0,
   pollTimer,
   contentController;
+let requestsOffset = 0, requestsSequence = 0;
+const libraryState = { view: "list", query: "", sort: "recent", trash: false };
+try { if (localStorage.getItem("bookanalyst.library.view") === "grid") libraryState.view = "grid"; } catch {}
 let tasks = [],
   pageTaskState = "",
   refreshTimer;
@@ -28,20 +33,27 @@ async function navigate(target, id) {
   contentController?.abort();
   route = target;
   run = null;
+  requestsOffset = 0;
   document
     .querySelectorAll("[data-nav]")
     .forEach((x) => x.classList.toggle("active", x.dataset.nav === target));
   $("#breadcrumb").textContent = {
     library: "书库",
+    templates: "TeX 模板",
     runs: "运行记录",
-    settings: "模型连接",
+    settings: "模型设置",
     run: "文献转换",
   }[target];
-  if (target === "settings") {
+  if (target === "templates") {
+    const templates = await api("/api/templates");
+    if (version !== routeVersion) return;
+    $("#main").innerHTML = templateUI.view(templates);
+  } else if (target === "settings") {
     const result = await api("/api/settings");
     if (version !== routeVersion) return;
     settings = result;
-    $("#main").innerHTML = views.settings(settings);
+    $("#main").innerHTML = views.settings(settings, data.model_stages);
+    void loadStageModelChoices($("#settings-form"), settings);
   } else if (target === "run") {
     const result = await api(`/api/runs/${id}/status`);
     if (version !== routeVersion) return;
@@ -59,8 +71,45 @@ async function navigate(target, id) {
     await bootstrap();
     if (version !== routeVersion) return;
     $("#main").innerHTML =
-      target === "library" ? views.library(data) : views.runs(data);
+      target === "library" ? views.library(data, libraryState) : views.runs(data);
   }
+}
+function renderLibrary() {
+  if (route === "library") $("#main").innerHTML = views.library(data, libraryState);
+}
+function filterLibrary() {
+  if (route === "library") $("#library-results").innerHTML = views.libraryResults(data, libraryState);
+}
+async function manageBook(button) {
+  const action = button.dataset.bookAction, id = button.dataset.bookId;
+  const book = [...data.books, ...(data.deleted_books || [])].find(b => b.id === id);
+  if (!book) return;
+  if (action === "template") return await templateUI.openApply(book);
+  if (action === "reveal" || action === "restore") {
+    const version = routeVersion;
+    button.disabled = true;
+    try {
+      await api(`/api/books/${id}/${action}`, { method: "POST", body: {} });
+      if (action === "restore") {
+        await bootstrap();
+        if (version === routeVersion) renderLibrary();
+      }
+      toast(action === "restore" ? "书籍已恢复" : "已打开书籍文件位置");
+    } finally { button.disabled = false; }
+    return;
+  }
+  const form = $("#book-form"), renaming = action === "rename";
+  form.dataset.bookId = id;
+  form.dataset.action = action;
+  $("#book-dialog-title").textContent = renaming ? "重命名书籍" : "移入回收站";
+  $("#book-dialog-description").textContent = renaming ? "设置书库中显示的书名。" : `将“${book.title}”移入回收站？原 PDF 和已有转换任务会保留，可随时恢复。`;
+  $("#book-title-label").hidden = !renaming;
+  form.elements.title.disabled = !renaming;
+  form.elements.title.value = book.title;
+  $("#book-submit").textContent = renaming ? "保存" : "移入回收站";
+  $("#book-error").textContent = "";
+  $("#book-dialog").showModal();
+  if (renaming) { form.elements.title.focus(); form.elements.title.select(); }
 }
 function updateStatus() {
   if (!run) return;
@@ -81,12 +130,24 @@ function updateStatus() {
   }
   $("#resume").hidden =
     run.legacy || run.state === "RUNNING" || run.state === "COMPLETED";
+  $("#retry-unknown").hidden = run.legacy || run.state === "RUNNING" || run.state === "COMPLETED";
   $("#pause").hidden = run.legacy || run.state !== "RUNNING";
   $("#result-pdf").hidden = !run.legacy && run.state !== "COMPLETED";
-  $("#run-message").hidden = !run.error;
-  $("#run-message").textContent = run.error
-    ? `${run.error.code} · ${run.error.message}`
+  $("#retain-result").hidden = run.state !== "COMPLETED";
+  const displayError = run.error || run.retention_error;
+  $("#run-message").hidden = !displayError;
+  $("#run-message").textContent = displayError
+    ? `${displayError.code} · ${displayError.message}`
     : "";
+  const reviewNote = $("#reference-review-note");
+  reviewNote.hidden = !run.reference_review_count;
+  reviewNote.querySelector("a").textContent = `引用待确认 ${run.reference_review_count || 0} 条`;
+  updateRunModelLive();
+  const compilerActivity = $("#compiler-activity");
+  if (compilerActivity) {
+    compilerActivity.hidden = !run.compiler?.activity || run.stage !== "finish";
+    compilerActivity.textContent = `${run.compiler?.agent === "pi" ? "Pi" : "Codex"} · ${run.compiler?.activity || ""}`;
+  }
 }
 async function updateTasks() {
   const id = run.id,
@@ -162,35 +223,32 @@ async function poll() {
     const next = await api(`/api/runs/${id}/status`);
     if (version !== routeVersion) return;
     const completed = next.state === "COMPLETED" && run.state !== "COMPLETED";
-    const changed = next.updated_at !== run.updated_at;
+    const changed = next.updated_at !== run.updated_at ||
+      JSON.stringify(next.compiler) !== JSON.stringify(run.compiler);
     run = next;
     if (changed) {
       updateStatus();
       await updateTasks();
       if (completed) await loadPage(true);
     }
+    await loadRequests();
   } catch (error) {
     toast(error.message);
   } finally {
     if (version === routeVersion) schedulePoll();
   }
 }
-async function models(cid) {
-  const status = await api(`/api/connections/${cid}/status`);
-  const select = $("#run-form").elements.model_id;
-  select.innerHTML = status.models
-    .map(
-      (m) =>
-        `<option value="${e(m.model || m.id)}" ${m.isDefault ? "selected" : ""}>${e(m.model || m.id)}</option>`,
-    )
-    .join("");
-  const preferred = settings.connections[cid]?.model_id;
-  if ([...select.options].some((o) => o.value === preferred))
-    select.value = preferred;
-
-  if (!status.models.length)
-    select.innerHTML = '<option value="">请先配置有效模型连接</option>';
-  return status;
+function updateRunModelLive() {
+  const el = $("#run-model-live"), button = $("#update-model-config");
+  if (!el || !run) return;
+  const stage = run.kind === "template" ? "template_apply" : run.stage;
+  const m = run.stage_models?.[stage] || run.model || {};
+  const effort = run.stage_models ? m.reasoning_effort : (["convert", "seams"].includes(stage) ? m.reasoning_effort : run.structure_effort);
+  el.textContent = run.model_refresh_pending
+    ? "配置待更新：下一次请求前读取设置页已保存的配置；已开始的请求保持原配置。"
+    : stage === "style" ? "按全书规则生成公共 TeX（程序执行）"
+    : `${data.model_stages?.[stage] || "当前阶段"}：${m.connection_id || "未设置"} / ${m.model_id || "连接默认模型"} · 思考 ${effort || "medium"}`;
+  if (button) button.hidden = run.legacy || run.state === "COMPLETED";
 }
 function bookChanged() {
   const form = $("#run-form"),
@@ -207,27 +265,58 @@ async function newRun(bid) {
     .join("");
   if (bid) form.elements.book_id.value = bid;
   bookChanged();
-  form.elements.connection_id.innerHTML = Object.entries(settings.connections)
-    .filter(([, c]) => c.enabled)
-    .map(
-      ([id, c]) =>
-        `<option value="${id}">${c.kind === "codex_chatgpt" ? "ChatGPT 官方订阅" : e(id)}</option>`,
-    )
-    .join("");
-  form.elements.connection_id.value = settings.default_connection;
+  form.elements.llm_concurrency.value = settings.llm_concurrency || 2;
   $("#new-run").showModal();
-  await models(form.elements.connection_id.value);
 }
 document.addEventListener("click", async (event) => {
   const button = event.target.closest("button,a[data-nav]");
   if (!button) return;
   try {
     if (button.dataset.nav) return await navigate(button.dataset.nav);
+    if (button.dataset.libraryView) {
+      libraryState.view = button.dataset.libraryView;
+      try { localStorage.setItem("bookanalyst.library.view", libraryState.view); } catch {}
+      return renderLibrary();
+    }
+    if (button.dataset.libraryTrash !== undefined) {
+      libraryState.trash = button.dataset.libraryTrash === "true";
+      libraryState.query = "";
+      return renderLibrary();
+    }
+    if (button.hasAttribute("data-book-close")) return $("#book-dialog").close();
+    if (button.dataset.bookAction) return await manageBook(button);
     if (button.hasAttribute("data-new"))
       return await newRun(button.dataset.new || null);
+    if (button.id === "update-model-config") {
+      const id = run.id, version = routeVersion;
+      button.disabled = true;
+      try {
+        const result = await api(`/api/runs/${id}/model`, {
+          method: "POST", body: { revision: run.revision, operation_id: crypto.randomUUID() },
+        });
+        if (version === routeVersion && run?.id === id) { run = result; updateStatus(); }
+        toast("已标记更新，下一次请求前读取设置页配置");
+      } finally { button.disabled = false; }
+      return;
+    }
+    if (button.id === "retain-result") {
+      button.disabled = true;
+      try {
+        await api(`/api/runs/${run.id}/retain`, { method: "POST", body: {} });
+        await bootstrap();
+        run = await api(`/api/runs/${run.id}/status`);
+        updateStatus();
+        toast("已保留到书库，默认 PDF 已更新");
+      } finally { button.disabled = false; }
+      return;
+    }
     if (button.dataset.run) return await navigate("run", button.dataset.run);
     if (button.hasAttribute("data-upload")) return $("#upload").click();
     if (button.hasAttribute("data-close")) return $("#new-run").close();
+    if (button.dataset.requestsOffset !== undefined) {
+      requestsOffset = Number(button.dataset.requestsOffset);
+      return await loadRequests();
+    }
     if (button.dataset.page) {
       page = Number(button.dataset.page);
       return await loadPage();
@@ -236,13 +325,13 @@ document.addEventListener("click", async (event) => {
       page += button.id === "next" ? 1 : -1;
       return await loadPage();
     }
-    if (button.id === "resume" || button.id === "pause") {
+    if (button.id === "resume" || button.id === "pause" || button.id === "retry-unknown") {
       button.disabled = true;
       await api(
         `/api/runs/${run.id}/${button.id === "pause" ? "pause" : "start"}`,
         {
           method: "POST",
-          body: { revision: run.revision, operation_id: crypto.randomUUID() },
+          body: { revision: run.revision, operation_id: crypto.randomUUID(), ...(button.id === "retry-unknown" ? { retry_unknown: true } : {}) },
         },
       );
       run = await api(`/api/runs/${run.id}/status`);
@@ -257,6 +346,19 @@ document.addEventListener("click", async (event) => {
       $("#account-status").textContent =
         s.status === "READY"
           ? "连接正常 · " + s.models.map((m) => m.model || m.id).join("、")
+          : s.message || s.status;
+      button.disabled = false;
+    }
+    if (button.id === "custom-check") {
+      button.disabled = true;
+      const s = await api("/api/connections/custom_api/test", {
+        method: "POST",
+        body: {},
+      });
+      const names = s.models.map((m) => m.model || m.id).filter(Boolean);
+      $("#custom-status").textContent =
+        s.status === "READY"
+          ? `${s.message || "连接正常"}${names.length ? " · " + names.slice(0, 6).join("、") + (names.length > 6 ? "…" : "") : ""}`
           : s.message || s.status;
       button.disabled = false;
     }
@@ -275,8 +377,13 @@ document.addEventListener("click", async (event) => {
 });
 document.addEventListener("change", async (event) => {
   try {
+    if (event.target.id === "library-sort") {
+      libraryState.sort = event.target.value;
+      filterLibrary();
+    }
     if (event.target.name === "book_id") bookChanged();
-    if (event.target.name === "connection_id") await models(event.target.value);
+    if (event.target.hasAttribute("data-stage-connection"))
+      stageConnectionChanged(event.target, settings);
     if (event.target.id === "page-number") {
       page = Math.max(
         run.pages[0],
@@ -297,26 +404,47 @@ document.addEventListener("change", async (event) => {
     toast(error.message);
   }
 });
-document.addEventListener(
-  "toggle",
-  async (event) => {
-    if (event.target.id !== "requests-details" || !event.target.open || !run)
-      return;
-    try {
-      const result = await api(`/api/runs/${run.id}/requests`);
-      $("#requests-content").innerHTML =
-        `<p class="hint">共 ${result.total} 次请求；已返回用量的 ${result.tokens.reported_calls} 次合计：输入 ${result.tokens.input.toLocaleString()} / 输出 ${result.tokens.output.toLocaleString()} token（输出含思考 ${result.tokens.reasoning.toLocaleString()}）。下方显示最新 50 次，缺失用量为未知。</p><div class="table-wrap"><table><thead><tr><th>用途</th><th>状态</th><th>模型 / 思考</th><th>秒</th><th>输入 / 输出 token</th></tr></thead><tbody>${result.rows
-          .map((r) => {
-            const u = r.usage?.tokens?.total;
-            return `<tr><td>${e(r.purpose)}</td><td>${e(r.state)}</td><td>${e(r.model || "未知")} / ${e(r.effort || "默认")}</td><td>${r.seconds}</td><td>${u ? `${u.inputTokens} / ${u.outputTokens}` : "未知"}</td></tr>`;
-          })
-          .join("")}</tbody></table></div>`;
-    } catch (error) {
-      toast(error.message);
-    }
-  },
-  true,
-);
+document.addEventListener("input", event => {
+  if (event.target.id === "library-search") {
+    libraryState.query = event.target.value;
+    filterLibrary();
+  }
+});
+document.addEventListener("submit", async event => {
+  if (event.target.id !== "book-form") return;
+  event.preventDefault();
+  const form = event.target, button = $("#book-submit"), version = routeVersion;
+  const renaming = form.dataset.action === "rename";
+  button.disabled = true;
+  try {
+    await api(`/api/books/${form.dataset.bookId}`, {
+      method: renaming ? "PATCH" : "DELETE",
+      ...(renaming ? { body: { title: form.elements.title.value.trim() } } : {}),
+    });
+    $("#book-dialog")?.close();
+    await bootstrap();
+    if (version === routeVersion) renderLibrary();
+    toast(renaming ? "书名已更新" : "已移入回收站，可在回收站恢复");
+  } catch (error) {
+    if (version === routeVersion) $("#book-error").textContent = error.message;
+  } finally { button.disabled = false; }
+});
+async function loadRequests() {
+  if (!run || !$("#requests-details")?.open) return;
+  const id = run.id, version = routeVersion, sequence = ++requestsSequence;
+  const result = await api(`/api/runs/${id}/requests?grouped=true&offset=${requestsOffset}`);
+  if (version !== routeVersion || sequence !== requestsSequence || !$("#requests-details")?.open) return;
+  const panel = $("#requests-content");
+  const expanded = new Set([...panel.querySelectorAll("details[open]")].map(d => d.dataset.requestGroup));
+  panel.innerHTML = views.requestHistory(result, requestsOffset);
+  panel.querySelectorAll("details[data-request-group]").forEach(d => {
+    d.open = expanded.has(d.dataset.requestGroup);
+  });
+}
+document.addEventListener("toggle", async (event) => {
+  if (event.target.id !== "requests-details" || !event.target.open) return;
+  try { await loadRequests(); } catch (error) { toast(error.message); }
+}, true);
 $("#run-form").onsubmit = async (event) => {
   event.preventDefault();
   const form = event.target,
@@ -326,12 +454,6 @@ $("#run-form").onsubmit = async (event) => {
     const f = new FormData(form),
       body = {
         book_id: f.get("book_id"),
-        model: {
-          connection_id: f.get("connection_id"),
-          model_id: f.get("model_id"),
-          reasoning_effort: f.get("reasoning_effort") || "medium",
-        },
-        structure_effort: f.get("structure_effort") || "xhigh",
       setup_pages: String(f.get("setup_pages"))
           .split(/[,，\s]+/)
           .filter(Boolean)
@@ -384,9 +506,14 @@ document.addEventListener("submit", async (event) => {
       max_in_flight: Number(f.get("custom_concurrency")),
       timeout_seconds: Number(f.get("custom_timeout")),
     });
+    s.stage_models = readStageModels(event.target, data.model_stages);
+    s.llm_concurrency = Number(f.get("workflow_concurrency"));
     settings = await api("/api/settings", { method: "PUT", body: s });
-    if (route === "settings") $("#main").innerHTML = views.settings(settings);
-    toast("连接设置已保存");
+    if (route === "settings") {
+      $("#main").innerHTML = views.settings(settings, data.model_stages);
+      void loadStageModelChoices($("#settings-form"), settings);
+    }
+    toast("模型设置已保存；已有任务点击更新模型配置后生效");
   } catch (error) {
     $("#settings-error").textContent = error.message;
   } finally {
@@ -396,6 +523,7 @@ document.addEventListener("submit", async (event) => {
 window.addEventListener("hashchange", () =>
   navigate(location.hash === "#runs" ? "runs" : "library"),
 );
+templateUI.init({ navigate, toast });
 bootstrap()
   .then(() => {
     const id = new URLSearchParams(location.search).get("run");

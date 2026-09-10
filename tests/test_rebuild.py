@@ -146,7 +146,8 @@ async def test_visual_conversion_uses_only_owned_pages_and_reuses_success(
     task = engine.store.tasks(run["id"], "convert")[0]
     calls = []
 
-    async def ask(run, key, purpose, payload, schema, pages):
+    async def ask(run, key, purpose, payload, schema, pages, extra_images=()):
+        assert not extra_images
         calls.append((payload, pages))
         return result(pages)
 
@@ -177,7 +178,7 @@ async def test_image_cache_does_not_render_twice(app, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_five_stages_compile_and_resume_without_duplicate_requests(
+async def test_seven_stages_compile_and_resume_without_duplicate_requests(
     app, monkeypatch
 ):
     if not shutil.which("xelatex"):
@@ -195,12 +196,14 @@ async def test_five_stages_compile_and_resume_without_duplicate_requests(
         if purpose == "setup":
             return {
                 "documentclass": "article",
+                "public_tex": "",
                 "title": "",
                 "author": "",
                 "rules": "",
                 "toc": [],
                 "numbering": {"rules": [], "initial": []},
             }
+        assert purpose != "compile_repair", "A clean build needs no final agent request"
         return result(payload["owned_pages"])
 
     monkeypatch.setattr(engine.providers, "resolve", resolve)
@@ -272,7 +275,9 @@ async def test_receipt_recovery_reuses_completed_upstream_response(app, monkeypa
 
 
 @pytest.mark.asyncio
-async def test_manual_resume_can_retry_invalid_conversion(app, monkeypatch):
+async def test_validation_repairs_automatically_then_resume_reuses_result(
+    app, monkeypatch
+):
     engine = app.state.engine
     store = app.state.store
     run = make_run(app)
@@ -286,8 +291,7 @@ async def test_manual_resume_can_retry_invalid_conversion(app, monkeypatch):
         return result([1] if len(calls) <= 3 else [1, 2, 3])
 
     monkeypatch.setattr(engine.providers, "generate", generate)
-    with pytest.raises(WorkflowError, match="自动修复"):
-        await engine.convert(run, task, {"rules": ""})
+    await engine.convert(run, task, {"rules": ""})
     store.change(run["id"], lambda r: r.update(revision=r["revision"] + 1))
     recovered = await engine.convert(store.get("run", run["id"]), task, {"rules": ""})
     assert len(calls) == 4 and len(recovered["pages"]) == 3

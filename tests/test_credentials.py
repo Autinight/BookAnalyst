@@ -110,3 +110,67 @@ async def test_pasted_key_is_used_only_in_authorization_header(app, protocol, tm
     resolved, conn = await provider.resolve(binding, require_image=True)
     await provider._custom(conn, resolved, "content", {"type": "object"}, [])
     assert len(seen) == 1
+
+
+@pytest.mark.asyncio
+async def test_custom_connection_test_uses_saved_key_and_does_not_generate(app, tmp_path):
+    key = "test-probe-key"
+    with client_for(app) as client:
+        settings = client.get("/api/settings").json()
+        settings["connections"]["custom_api"].update(
+            enabled=True,
+            base_url="http://model.test/v1",
+            model_id="test-model",
+            protocol="chat_completions",
+            api_key=key,
+            image_support="supported",
+        )
+        assert client.put("/api/settings", json=settings).status_code == 200
+    seen = []
+
+    def handle(request):
+        assert request.headers["Authorization"] == "Bearer " + key
+        seen.append((request.method, request.url.path))
+        if request.url.path.endswith("/models"):
+            return httpx.Response(
+                200,
+                json={"data": [{"id": "test-model"}, {"id": "other-model"}]},
+            )
+        return httpx.Response(500, json={"error": "should not generate"})
+
+    transport = httpx.MockTransport(handle)
+    provider = Providers(app.state.store, tmp_path, transport)
+    result = await provider.test("custom_api")
+    assert result["status"] == "READY"
+    assert [m["id"] for m in result["models"]][:2] == ["test-model", "other-model"]
+    assert seen == [("GET", "/v1/models")]
+    app.state.engine.providers.transport = transport
+    with client_for(app) as client:
+        response = client.post("/api/connections/custom_api/test", json={})
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "READY"
+        assert [m["id"] for m in body["models"]][:2] == ["test-model", "other-model"]
+        assert key not in response.text
+
+
+@pytest.mark.asyncio
+async def test_custom_connection_test_reports_auth_failure(app, tmp_path):
+    with client_for(app) as client:
+        settings = client.get("/api/settings").json()
+        settings["connections"]["custom_api"].update(
+            enabled=True,
+            base_url="http://model.test/v1",
+            model_id="test-model",
+            protocol="chat_completions",
+            api_key="test-bad-key",
+        )
+        assert client.put("/api/settings", json=settings).status_code == 200
+
+    def handle(request):
+        return httpx.Response(401, json={"error": {"message": "Incorrect API key"}})
+
+    provider = Providers(app.state.store, tmp_path, httpx.MockTransport(handle))
+    result = await provider.test("custom_api")
+    assert result["status"] == "AUTH_REQUIRED"
+    assert result["message"] == "模型服务鉴权失败"

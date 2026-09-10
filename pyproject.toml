@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bookanalyst"
-version = "0.7.0"
+version = "0.7.1"
 description = "Local visual mathematical PDF to LaTeX workbench"
 requires-python = ">=3.12"
 dependencies = [
@@ -29,9 +29,10 @@ bookanalyst = "bookanalyst.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+namespaces = false
 
 [tool.setuptools.package-data]
-bookanalyst = ["static/*"]
+bookanalyst = ["static/*", "pi_runtime/*.mjs", "pi_runtime/*.json"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

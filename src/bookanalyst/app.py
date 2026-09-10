@@ -11,10 +11,16 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from .config import DEFAULT_SETTINGS, prepare_settings
 from .store import Store, WorkflowError
-from .models import RunCreate, Operation, STAGES, STAGE_NAMES, WORKFLOW_VERSION
+from .models import RunCreate, Operation, StartOperation, RunModelUpdate, STAGES, STAGE_NAMES, WORKFLOW_VERSION
 from .llm import Providers
 from .engine import Engine
 from .pdf import inspect_pdf
+from .request_history import group_requests
+from .reference_review import review_records, review_response
+from .templates import register_template_routes
+from .library import register_library_routes
+from .library_outputs import output_directory, retained_directory, public_result
+from .model_config import MODEL_STAGES, settings_models
 
 
 def create_app(workspace=None, data_dir=None):
@@ -24,9 +30,15 @@ def create_app(workspace=None, data_dir=None):
         previous = store.get("settings", "main")
         if "mineru" in previous:
             store.put("settings", "pre-v6", previous)
-            store.put("settings", "main", {k: previous[k] for k in DEFAULT_SETTINGS})
+            store.put("settings", "main", {k: previous.get(k, copy.deepcopy(v)) for k, v in DEFAULT_SETTINGS.items()})
     except WorkflowError:
         store.put("settings", "main", copy.deepcopy(DEFAULT_SETTINGS))
+    saved = store.get("settings", "main")
+    if not saved.get("stage_models"):
+        recent = next((r["config"] for r in store.list("run") if r.get("workflow_version") == WORKFLOW_VERSION), None)
+        saved["stage_models"] = settings_models(saved, recent)
+        saved.setdefault("llm_concurrency", (recent or {}).get("llm_concurrency", 2))
+        store.put("settings", "main", saved)
     manifest = workspace / "tests/data/books.json"
     if manifest.exists():
         for item in json.loads(manifest.read_text(encoding="utf-8"))["books"]:
@@ -51,7 +63,7 @@ def create_app(workspace=None, data_dir=None):
         yield
         await engine.close()
 
-    app = FastAPI(title="BookAnalyst", version="0.7.0", lifespan=lifespan)
+    app = FastAPI(title="BookAnalyst", version="0.7.1", lifespan=lifespan)
     app.state.store = store
     app.state.engine = engine
     app.state.workspace = workspace
@@ -87,20 +99,27 @@ def create_app(workspace=None, data_dir=None):
             {"code": exc.code, "message": exc.message}, status_code=exc.status
         )
 
-    def books():
+    register_library_routes(app, store)
+    register_template_routes(app, store, engine)
+
+    def books(deleted=False):
         return [
-            {k: b[k] for k in ("id", "title", "page_count", "size_bytes")}
-            for b in store.list("book")
+            {k: b[k] for k in ("id", "title", "page_count", "size_bytes")} | {"result": public_result(b)}
+            for b in store.list("book", limit=10000)
+            if bool(b.get("deleted")) == deleted
         ]
 
     @app.get("/api/bootstrap")
     async def bootstrap():
         return {
             "token": token,
-            "version": "0.7.0",
+            "version": "0.7.1",
             "books": books(),
+            "deleted_books": books(deleted=True),
+            "library_management": True,
             "runs": [store.summary(r) for r in store.list("run")],
             "stages": dict(zip(STAGES, STAGE_NAMES)),
+            "model_stages": MODEL_STAGES,
         }
 
     def public_settings():
@@ -126,6 +145,10 @@ def create_app(workspace=None, data_dir=None):
     @app.get("/api/connections/{cid}/status")
     async def connection(cid: str):
         return await providers.status(cid)
+
+    @app.post("/api/connections/{cid}/test")
+    async def test_connection(cid: str):
+        return await providers.test(cid)
 
     @app.post("/api/connections/{cid}/login")
     async def login(cid: str):
@@ -165,25 +188,47 @@ def create_app(workspace=None, data_dir=None):
 
     @app.get("/api/books/{bid}/pdf")
     async def pdf(bid: str):
-        return FileResponse(
-            store.get("book", bid)["path"], media_type="application/pdf"
-        )
+        book = store.get("book", bid)
+        path = retained_directory(store, book) / "main.pdf" if book.get("retained_result") else book["path"]
+        return FileResponse(path, media_type="application/pdf")
 
     @app.post("/api/runs")
     async def create(command: RunCreate):
         book = store.get("book", command.book_id)
+        if book.get("deleted"):
+            raise WorkflowError("BOOK_DELETED", "请先从回收站恢复这本书", 409)
         if command.end_page > book["page_count"] or any(
             p < 1 or p > book["page_count"] for p in command.setup_pages
         ):
             raise WorkflowError("PAGE_SCOPE", "页码超出原书范围", 422)
-        return store.summary(store.create_run(command.model_dump(), book))
+        config = command.model_dump()
+        if not ({"model", "structure_effort"} & command.model_fields_set):
+            saved = store.get("settings", "main")
+            config["stage_models"] = settings_models(saved)
+            if "llm_concurrency" not in command.model_fields_set:
+                config["llm_concurrency"] = saved.get("llm_concurrency", 2)
+        return store.summary(store.create_run(config, book))
 
     @app.get("/api/runs/{rid}/status")
     async def status(rid: str):
         run = store.get("run", rid)
         result = store.summary(run)
+        result["reference_review_count"] = len(review_records(store.directory(rid)))
         result["tasks"] = dict(Counter(t["state"] for t in store.tasks(rid, "convert")))
+        sessions = [store.directory(rid) / name for name in ("codex-compiler.json", "pi-compiler.json")]
+        sessions = [p for p in sessions if p.exists()]
+        if sessions:
+            session = max(sessions, key=lambda p: p.stat().st_mtime_ns)
+            value = json.loads(session.read_text(encoding="utf-8"))
+            result["compiler"] = {k: value.get(k) for k in ("thread_id", "status", "activity")}
+            result["compiler"]["agent"] = "pi" if session.name == "pi-compiler.json" else "codex"
         return result
+
+    @app.get("/api/runs/{rid}/reference-review")
+    async def user_reference_review(rid: str, download: bool = False):
+        run = store.get("run", rid)
+        return review_response(review_records(store.directory(rid)), run["source"]["title"],
+                               f"/api/books/{run['source']['id']}/source", download)
 
     @app.get("/api/runs/{rid}/tasks")
     async def tasks(rid: str):
@@ -191,7 +236,7 @@ def create_app(workspace=None, data_dir=None):
         return store.tasks(rid)
 
     @app.post("/api/runs/{rid}/start")
-    async def start(rid: str, command: Operation):
+    async def start(rid: str, command: StartOperation):
         return await engine.start(rid, command)
 
     @app.post("/api/runs/{rid}/pause")
@@ -199,11 +244,23 @@ def create_app(workspace=None, data_dir=None):
         engine.pause(rid, command)
         return {"ok": True}
 
+    @app.post("/api/runs/{rid}/model")
+    async def rebind(rid: str, command: RunModelUpdate):
+        return await engine.rebind(rid, command)
+
     @app.get("/api/runs/{rid}/content")
     async def content(rid: str, page: int = Query(1, ge=1)):
         run = store.get("run", rid)
         if run.get("workflow_version") != WORKFLOW_VERSION:
             return {"legacy": True, "tex": "", "page": page}
+        if run.get("kind") in ("template", "manual_layout"):
+            if not run["config"]["start_page"] <= page <= run["config"]["end_page"]:
+                raise WorkflowError("PAGE_SCOPE", "页面不属于本次运行", 422)
+            project = store.directory(rid) / "tex"
+            body = (project / "body.tex").read_text(encoding="utf-8")
+            rows = engine.project_pages({"body.tex": body}, [page], strict=False)
+            return next((p for p in rows if p["page"] == page), {"page": page, "tex": ""}) | {
+                "task": {"id": "finish-project", "state": run["state"]}, "final": run["state"] == "COMPLETED"}
         task = next(
             (t for t in store.tasks(rid, "convert") if page in t["pages"]), None
         )
@@ -228,19 +285,25 @@ def create_app(workspace=None, data_dir=None):
 
     @app.get("/api/runs/{rid}/requests")
     async def requests(
-        rid: str, offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100)
+        rid: str, offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100),
+        grouped: bool = False,
     ):
-        store.get("run", rid)
+        run = store.get("run", rid)
         calls = store.calls(rid)
         totals = Counter(c["metadata"].get("purpose", c["kind"]) for c in calls)
         rows = []
-        for c in list(reversed(calls))[offset : offset + limit]:
+        for c in reversed(calls):
             m = c["metadata"]
             rows.append(
                 {
                     "id": c["id"],
+                    "task_id": m.get("task_id"),
+                    "input_hash": m.get("input_hash"),
+                    "attempt": m.get("attempt", 1),
+                    "retry_exhausted": m.get("retry_exhausted", False),
                     "state": c["state"],
                     "purpose": m.get("purpose", c["kind"]),
+                    "phase": m.get("phase"),
                     "model": m.get("model_id"),
                     "effort": m.get("reasoning_effort"),
                     "usage": m.get("usage"),
@@ -248,6 +311,7 @@ def create_app(workspace=None, data_dir=None):
                         m.get("finished_at", time.time()) - m.get("started_at", 0), 2
                     ),
                     "error": m.get("error_code"),
+                    "error_message": m.get("error_message"),
                 }
             )
         actual = {
@@ -277,21 +341,21 @@ def create_app(workspace=None, data_dir=None):
                 actual["output"] += u.get(
                     "output_tokens", u.get("completion_tokens", 0)
                 )
+                actual["reasoning"] += u.get("reasoning_tokens", 0)
+                actual["cached_input"] += u.get("cached_input_tokens", 0)
                 actual["total"] += u.get(
                     "total_tokens", u.get("input_tokens", 0) + u.get("output_tokens", 0)
                 )
-        return {"total": len(calls), "purposes": totals, "rows": rows, "tokens": actual}
+        states = {}
+        if grouped:
+            rows, states = group_requests(rows, run, store.tasks(rid))
+        return {
+            "total": len(rows), "request_total": len(calls), "purposes": totals,
+            "rows": rows[offset : offset + limit], "tokens": actual, "states": states,
+        }
 
     def output_dir(run):
-        if run.get("workflow_version") in ("0.6", WORKFLOW_VERSION):
-            return store.directory(run["id"]) / "tex"
-        root = store.root / "runs" / run["id"]
-        paths = list(root.glob("r*/S7/tex/main.tex")) + list(
-            root.glob("r*/S7/candidate/tex/main.tex")
-        )
-        if not paths:
-            raise WorkflowError("NO_OUTPUT", "此运行尚无 TeX 产物", 404)
-        return max(paths, key=lambda p: int(p.relative_to(root).parts[0][1:])).parent
+        return output_directory(store, run)
 
     @app.get("/api/runs/{rid}/pdf")
     async def result_pdf(rid: str):

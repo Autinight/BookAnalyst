@@ -2,10 +2,12 @@
 
 import copy
 import re
+from collections import Counter, defaultdict
+from difflib import get_close_matches
 from typing import Literal
 from pydantic import Field
 from .models import StrictModel
-from .store import WorkflowError
+from .store import WorkflowError, digest
 
 THEOREMS = [
     "theorem",
@@ -65,7 +67,12 @@ class SymbolEdit(StrictModel):
     key: str
 
 
-LABEL_NAME = re.compile(r"[A-Za-z][A-Za-z0-9._-]*:[A-Za-z0-9._-]+(?::[A-Za-z0-9._-]+)*")
+# Source identifiers are plain text, not an ASCII-only numbering vocabulary.
+# Exclude TeX syntax/control characters while preserving Unicode author notation.
+LABEL_PART = r"[^\s:{}\\%#&$^~\x00-\x1f\x7f]+"
+LABEL_NAME = re.compile(
+    r"[A-Za-z][A-Za-z0-9._-]*:" + LABEL_PART + r"(?::" + LABEL_PART + r")*"
+)
 NATIVE = re.compile(r"\\(label|ref|eqref|nameref)\{([^{}]+)\}")
 MARKERS = re.compile(r"\\(BAHeading|BAFigure|label|ref|eqref|nameref)\{([^{}]+)\}")
 
@@ -223,8 +230,6 @@ def collect_symbols(results, headings):
 
 
 def symbol_problems(index):
-    from collections import Counter
-
     keys = Counter(x["key"] for x in index["targets"])
     return {
         "duplicate_labels": sorted(k for k, n in keys.items() if n > 1),
@@ -234,8 +239,8 @@ def symbol_problems(index):
     }
 
 
-def apply_symbol_edits(results, headings, changes):
-    index = collect_symbols(results, headings)
+def symbol_edits(index, changes):
+    """Validate occurrence edits without copying or rescanning the book."""
     edits = []
     for group, field in [("targets", "label_edits"), ("references", "reference_edits")]:
         available = {x["id"]: x for x in index[group]}
@@ -250,9 +255,33 @@ def apply_symbol_edits(results, headings, changes):
             if group == "targets" and key.split(":")[:2] != old["key"].split(":")[:2]:
                 raise WorkflowError(
                     "SYMBOL_EDIT",
-                    "重名消解只能追加作用域，不能改写隐藏的原书环境和编号",
+                    f"{key} 改变了类型或原书编号；保留前两段，用冒号追加作用域，如 {':'.join(old['key'].split(':')[:2])}:scope",
                 )
             edits.append(old | {"replacement": "\\" + old["command"] + "{" + key + "}"})
+    return edits
+
+
+def unconfirmed_reference_ids(index, changes):
+    """Only explicit, unchanged missing occurrences can be left for confirmation."""
+    references = {r["id"]: r for r in index["references"]}
+    targets = {t["key"] for t in index["targets"]}
+    edited = {e["id"] for e in changes["reference_edits"]}
+    pending = set()
+    for field, bibliography, code in (("unconfirmed_bibliography", True, "BIBLIOGRAPHY_REVIEW"),
+                                       ("unconfirmed_references", False, "REFERENCE_REVIEW")):
+        for item in changes.get(field, []):
+            ref = references.get(item["id"])
+            if (not ref or (ref["kind"] == "bibliography") != bibliography or ref["key"] in targets
+                    or item["id"] in edited | pending or not item["reason"].strip()):
+                raise WorkflowError(code, "只能保留未修改、缺少目标的对应类型引用，并说明查找依据及无法确认的原因")
+            pending.add(item["id"])
+    return pending
+
+
+def apply_symbol_edits(results, headings, changes, *, require_resolved=True):
+    index = collect_symbols(results, headings)
+    edits = symbol_edits(index, changes)
+    pending = unconfirmed_reference_ids(index, changes)
     output = copy.deepcopy(results)
     for batch in output:
         for page in batch["pages"]:
@@ -268,7 +297,8 @@ def apply_symbol_edits(results, headings, changes):
                 )
     updated = collect_symbols(output, headings)
     problems = symbol_problems(updated)
-    if problems["duplicate_labels"] or problems["unresolved_references"]:
+    unresolved = [r for r in problems["unresolved_references"] if r["id"] not in pending]
+    if require_resolved and (problems["duplicate_labels"] or unresolved):
         raise WorkflowError(
             "UNRESOLVED_REFERENCE",
             "仍存在重名标签或无法解析的引用；须核对环境、原书编号及章节作用域",
@@ -276,26 +306,88 @@ def apply_symbol_edits(results, headings, changes):
     return output, updated
 
 
-def numbering_report(aux, index):
-    actual = dict(re.findall(r"\\newlabel\{([^}]+)\}\{\{([^{}]*)\}", aux))
-    checks = []
+def reference_groups(index, phase):
+    """Keep writable label namespaces together; share only relevant target evidence."""
+    problems = symbol_problems(index)
+    duplicates = set(problems["duplicate_labels"])
+    targets_by_key = defaultdict(list)
     for target in index["targets"]:
-        label = target["key"]
-        printed = actual.get(label)
-        observed = target["number"].strip().strip("().[] ")
-        checks.append(
-            {
-                "id": target["id"],
-                "label": label,
-                "page": target["page"],
-                "observed": observed,
-                "rendered": printed,
-                "matches": printed is not None
-                and printed.strip().rstrip(".") == observed.rstrip("."),
-            }
+        targets_by_key[target["key"]].append(target)
+    buckets = defaultdict(list)
+    if phase == "duplicates":
+        # Different suffixes of the same kind/number can collide after editing.
+        for key in sorted(duplicates):
+            buckets[":".join(key.split(":")[:2])].append(key)
+    else:
+        for ref in problems["unresolved_references"]:
+            if ref["key"] not in targets_by_key:
+                buckets[ref["key"]] = [ref["key"]]
+
+    def normalized(number):
+        return number.replace("prime", "'").replace("′", "'").replace("″", "''").casefold()
+
+    def family(kind):
+        if kind in THEOREMS and kind != "exercise":
+            return "statement"
+        return "exercise" if kind in ("exercise", "problem") else kind
+
+    groups = []
+    for namespace, keys in sorted(buckets.items()):
+        references = [r for r in index["references"] if r["key"] in keys]
+        if phase == "duplicates":
+            targets = [t for t in index["targets"] if ":".join(t["key"].split(":")[:2]) == namespace]
+            editable = [t["id"] for t in targets if t["key"] in keys]
+        else:
+            kind, number = keys[0].split(":")[:2]
+            candidates = [t for t in index["targets"] if family(t["kind"]) == family(kind)]
+            targets = [t for t in candidates if normalized(t["number"]) == normalized(number)]
+            # Similar keys are evidence for the worker, never automatic replacements.
+            nearby = set(get_close_matches(keys[0], sorted({t["key"] for t in candidates}), n=5, cutoff=0.6))
+            targets += [t for t in candidates if t not in targets and t["key"] in nearby]
+            editable = []
+        groups.append({
+            "id": "reference-" + phase + "-" + digest(keys)[:16],
+            "phase": phase,
+            "keys": keys,
+            "targets": targets,
+            "references": references,
+            "label_ids": editable,
+        })
+    return groups
+
+
+def validate_reference_group(index, group, changes):
+    edits = symbol_edits(index, changes)
+    pending = unconfirmed_reference_ids(index, changes)
+    label_ids = set(group["label_ids"])
+    ref_ids = {r["id"] for r in group["references"]}
+    if not pending <= ref_ids or (pending and group["phase"] != "missing"):
+        raise WorkflowError("REFERENCE_REVIEW" if changes.get("unconfirmed_references") else "BIBLIOGRAPHY_REVIEW",
+                            "只能标记当前缺失引用组拥有的引用；重复标签必须修复")
+    if any(e["id"] not in label_ids | ref_ids for e in edits):
+        raise WorkflowError("SYMBOL_EDIT", "只能修改当前引用组拥有的标签和引用位置")
+    label_changes = {e["id"]: e["key"] for e in changes["label_edits"]}
+    ref_changes = {e["id"]: e["key"] for e in changes["reference_edits"]}
+    keys = Counter(t["key"] for t in index["targets"])
+    for t in group["targets"]:
+        if t["id"] in label_changes:
+            keys[t["key"]] -= 1
+            keys[label_changes[t["id"]]] += 1
+    supported = {label_changes.get(t["id"], t["key"]) for t in group["targets"]}
+    unresolved = [
+        {"id": r["id"], "key": ref_changes.get(r["id"], r["key"])}
+        for r in group["references"]
+        if r["id"] not in pending and (keys[ref_changes.get(r["id"], r["key"])] != 1
+        or ref_changes.get(r["id"], r["key"]) not in supported)
+    ]
+    collisions = sorted({
+        label_changes.get(t["id"], t["key"])
+        for t in group["targets"]
+        if t["id"] in label_ids and keys[label_changes.get(t["id"], t["key"])] != 1
+    })
+    if collisions or unresolved:
+        import json
+        raise WorkflowError(
+            "UNRESOLVED_REFERENCE",
+            "本组仍有异常：" + json.dumps({"duplicate_labels": collisions, "unresolved_references": unresolved}, ensure_ascii=False),
         )
-    return {
-        "checked": len(checks),
-        "mismatches": [c for c in checks if not c["matches"]],
-        "targets": checks,
-    }

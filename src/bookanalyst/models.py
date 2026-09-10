@@ -1,16 +1,18 @@
-"""Commands and the five-stage public workflow."""
+"""Commands and the seven-stage public workflow."""
 
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 WORKFLOW_VERSION = "0.7"
-STAGES = ["setup", "style", "convert", "seams", "headings"]
+STAGES = ["setup", "style", "convert", "seams", "headings", "references", "finish"]
 STAGE_NAMES = [
     "全书设置与计数规则",
-    "固定公共 TeX 样式",
+    "按全书规则生成公共 TeX",
     "分批视觉转换",
     "页面衔接",
-    "标题、标签与引用",
+    "标题层级与附录",
+    "标签与引用",
+    "编译与修复",
 ]
 
 
@@ -21,7 +23,7 @@ class StrictModel(BaseModel):
 class Binding(StrictModel):
     connection_id: str = "openai_subscription"
     model_id: str = ""
-    reasoning_effort: Literal["low", "medium", "high", "xhigh"] = "medium"
+    reasoning_effort: Literal["low", "medium", "high", "xhigh", "max"] = "medium"
 
 
 class RunCreate(StrictModel):
@@ -32,7 +34,7 @@ class RunCreate(StrictModel):
     llm_concurrency: int = Field(2, ge=1)
     setup_pages: list[int] = Field(default_factory=list)
     model: Binding = Field(default_factory=Binding)
-    structure_effort: Literal["high", "xhigh"] = "xhigh"
+    structure_effort: Literal["low", "medium", "high", "xhigh", "max"] = "xhigh"
 
     @model_validator(mode="after")
     def pages(self):
@@ -44,3 +46,13 @@ class RunCreate(StrictModel):
 class Operation(StrictModel):
     revision: int
     operation_id: str = Field(min_length=8)
+
+
+class RunModelUpdate(Operation):
+    model: Binding | None = None
+    structure_effort: Literal["low", "medium", "high", "xhigh", "max"] = "xhigh"
+    llm_concurrency: int = Field(2, ge=1)
+
+
+class StartOperation(Operation):
+    retry_unknown: bool = False
