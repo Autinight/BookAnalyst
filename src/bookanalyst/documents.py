@@ -339,14 +339,63 @@ def namespace(result, tid):
     return result
 
 
+# 接缝边界容差：模型抄写边界时允许的偏差（字符数）
+SEAM_SLACK = 8
+
+
+def _align_suffix(left, a):
+    """把近似左边界对齐到 left 的真实末尾；对齐不了返回 None。"""
+    if left.endswith(a):
+        return a
+    floor = max(8, len(a) // 2)
+    for cut in range(1, SEAM_SLACK + 1):
+        keep = len(a) - cut
+        if keep >= floor and left.endswith(a[:keep]):
+            return a[:keep]
+    if len(a) >= 8:
+        pos = left.rfind(a)
+        if pos >= 0 and 0 < len(left) - pos - len(a) <= SEAM_SLACK:
+            return left[pos:]
+    return None
+
+
+def _align_prefix(right, b):
+    """把近似右边界对齐到 right 的真实开头；对齐不了返回 None。"""
+    if right.startswith(b):
+        return b
+    floor = max(8, len(b) // 2)
+    for cut in range(1, SEAM_SLACK + 1):
+        keep = len(b) - cut
+        if keep >= floor and right.startswith(b[:keep]):
+            return b[:keep]
+    if len(b) >= 8:
+        pos = right.find(b)
+        if 0 < pos <= SEAM_SLACK:
+            return right[: pos + len(b)]
+    return None
+
+
 def apply_seam(left, right, patch):
     a, b = patch["left_suffix"], patch["right_prefix"]
     if not a and not b:
         if patch["replacement"]:
             raise WorkflowError("INVALID_PATCH", "空接缝不能插入额外内容")
         return left, right
-    if not left.endswith(a) or not right.startswith(b):
-        raise WorkflowError("STALE_PATCH", "接缝补丁与原片段不匹配")
+    fixed_a = _align_suffix(left, a) if a else ""
+    fixed_b = _align_prefix(right, b) if b else ""
+    if fixed_a is None or fixed_b is None:
+        if fixed_a is None:
+            raise WorkflowError(
+                "STALE_PATCH",
+                "left_suffix 贴不到左页末尾（容差 %d 字符）。原文末尾：%s  候选末尾：%s"
+                % (SEAM_SLACK, left[-60:], a[-60:]),
+            )
+        raise WorkflowError(
+            "STALE_PATCH",
+            "right_prefix 贴不到右页开头（容差 %d 字符）。原文开头：%s  候选开头：%s"
+            % (SEAM_SLACK, right[:60], b[:60]),
+        )
+    a, b = fixed_a, fixed_b
     safe_body(patch["replacement"])
     before = MARKERS.findall(a + b)
     after = MARKERS.findall(patch["replacement"])
