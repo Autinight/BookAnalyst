@@ -32,6 +32,7 @@ from .numbering import (
     apply_symbol_edits,
     reference_groups,
     validate_reference_group,
+    deferrable_duplicate_reference_ids,
 )
 from .reference_tools import ReferenceLibrary, compact_symbol, BIBLIOGRAPHY_INSTRUCTION, reference_evidence, REFERENCE_CONFIRMATION_INSTRUCTION, unconfirmed_items
 from .reference_repair import ESCALATION_INSTRUCTION, LEGACY_ESCALATION_INSTRUCTION, PREVIOUS_ESCALATION_INSTRUCTION, validate_repair_requests, repair_groups
@@ -47,6 +48,7 @@ def read(path):
 
 
 REPAIR_ATTEMPTS_PER_ROUND = 8
+REFERENCE_REPAIR_ATTEMPTS_PER_ROUND = 6
 
 
 class Engine:
@@ -167,9 +169,10 @@ class Engine:
             raise WorkflowError("PAUSED", "已停止派发并保存完成结果")
 
     def consume_repair_attempt(self, run, key, purpose):
-        """Label/reference workers and native Codex compilation have no round cap."""
-        if purpose in ("references", "compile_repair"):
+        """Native Codex compilation has no round cap; reference repairs use a smaller limit."""
+        if purpose == "compile_repair":
             return
+        limit = REFERENCE_REPAIR_ATTEMPTS_PER_ROUND if purpose == "references" else REPAIR_ATTEMPTS_PER_ROUND
         path = self.store.directory(run["id"]) / "repair-attempts" / f"{key}.json"
         epoch = run.get("repair_epoch", 0)
         saved = read(path) if path.exists() else {}
@@ -207,10 +210,10 @@ class Engine:
                             and previous.get("page_images") == task["pages"]
                         ):
                             attempts += 1
-        if attempts >= REPAIR_ATTEMPTS_PER_ROUND:
+        if attempts >= limit:
             raise WorkflowError(
                 "REPAIR_LIMIT",
-                f"{key} 本轮已达到 {REPAIR_ATTEMPTS_PER_ROUND} 次自动修复上限，仍未解决；已有结果保留，点击继续可再修复最多 {REPAIR_ATTEMPTS_PER_ROUND} 次",
+                f"{key} 本轮已达到 {limit} 次自动修复上限，仍未解决；已有结果保留，点击继续可再修复最多 {limit} 次",
             )
         atomic_json(path, {"epoch": epoch, "attempts": attempts + 1})
 
@@ -246,7 +249,7 @@ class Engine:
         try:
             repairing = purpose in ("compile_repair", "counter_repair") or bool(
                 payload.get("repair_feedback")
-            ) or (purpose in ("references", "seams") and payload.get("tool_round", 0) > 0)
+            ) or (purpose == "seams" and payload.get("tool_round", 0) > 0)
             if repairing:
                 self.consume_repair_attempt(run, key, purpose)
             run["request_task_id"] = key
@@ -657,6 +660,7 @@ class Engine:
                     await settle(group["keys"])
                     return
                 changes = {k: patch[k] for k in ("label_edits", "reference_edits")}
+                temporary = deferrable_duplicate_reference_ids(source_index, group, changes)
                 occurrences = {r["id"]: r for r in source_index["targets"] + source_index["references"]}
                 touched = {occurrences[e["id"]]["page"] for edits in changes.values() for e in edits}
                 touched.update(r["page"] for r in group["references"])
@@ -677,7 +681,7 @@ class Engine:
                             progress["changes"][field].extend(changes[field])
                         progress["reviews"].extend(compact_symbol(occurrences[item["id"]]) | item | {
                             "search_evidence": patch.get("search_evidence", []),
-                        } for item in unconfirmed_items(patch))
+                        } for item in unconfirmed_items(patch) if item["id"] not in temporary)
                         save()
                 if stale:
                     # Never apply an old occurrence ID after a local repair changed its page.

@@ -261,17 +261,19 @@ def symbol_edits(index, changes):
     return edits
 
 
-def unconfirmed_reference_ids(index, changes):
+def unconfirmed_reference_ids(index, changes, *, deferrable_ids=()):
     """Only explicit, unchanged missing occurrences can be left for confirmation."""
     references = {r["id"]: r for r in index["references"]}
     targets = {t["key"] for t in index["targets"]}
     edited = {e["id"] for e in changes["reference_edits"]}
+    deferrable = set(deferrable_ids)
     pending = set()
     for field, bibliography, code in (("unconfirmed_bibliography", True, "BIBLIOGRAPHY_REVIEW"),
                                        ("unconfirmed_references", False, "REFERENCE_REVIEW")):
         for item in changes.get(field, []):
             ref = references.get(item["id"])
-            if (not ref or (ref["kind"] == "bibliography") != bibliography or ref["key"] in targets
+            if (not ref or (ref["kind"] == "bibliography") != bibliography
+                    or (ref["key"] in targets and item["id"] not in deferrable)
                     or item["id"] in edited | pending or not item["reason"].strip()):
                 raise WorkflowError(code, "只能保留未修改、缺少目标的对应类型引用，并说明查找依据及无法确认的原因")
             pending.add(item["id"])
@@ -356,14 +358,34 @@ def reference_groups(index, phase):
     return groups
 
 
+def deferrable_duplicate_reference_ids(index, group, changes):
+    if group["phase"] != "duplicates" or not group["label_ids"]:
+        return set()
+    label_changes = {e["id"]: e["key"] for e in changes["label_edits"]}
+    ref_changes = {e["id"]: e["key"] for e in changes["reference_edits"]}
+    keys = Counter(t["key"] for t in index["targets"])
+    for target in group["targets"]:
+        if target["id"] in label_changes:
+            keys[target["key"]] -= 1
+            keys[label_changes[target["id"]]] += 1
+    return {
+        ref["id"]
+        for ref in group["references"]
+        if ref["key"] in group["keys"]
+        and ref["id"] not in ref_changes
+        and keys[ref["key"]] == 0
+    }
+
+
 def validate_reference_group(index, group, changes):
     edits = symbol_edits(index, changes)
-    pending = unconfirmed_reference_ids(index, changes)
+    deferrable = deferrable_duplicate_reference_ids(index, group, changes)
+    pending = unconfirmed_reference_ids(index, changes, deferrable_ids=deferrable)
     label_ids = set(group["label_ids"])
     ref_ids = {r["id"] for r in group["references"]}
-    if not pending <= ref_ids or (pending and group["phase"] != "missing"):
+    if not pending <= ref_ids or (pending and group["phase"] != "missing" and not pending <= deferrable):
         raise WorkflowError("REFERENCE_REVIEW" if changes.get("unconfirmed_references") else "BIBLIOGRAPHY_REVIEW",
-                            "只能标记当前缺失引用组拥有的引用；重复标签必须修复")
+                            "只能标记当前组拥有的引用；重复标签必须修复，无法绑定本组标签的跨组引用可保留原键并稍后解析")
     if any(e["id"] not in label_ids | ref_ids for e in edits):
         raise WorkflowError("SYMBOL_EDIT", "只能修改当前引用组拥有的标签和引用位置")
     label_changes = {e["id"]: e["key"] for e in changes["label_edits"]}

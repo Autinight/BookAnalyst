@@ -188,7 +188,7 @@ async def test_tool_continuations_exceed_ten_and_ignore_exhausted_counter(app, m
 
 
 @pytest.mark.asyncio
-async def test_validation_repairs_exceed_ten_and_still_require_valid_edits(app, monkeypatch):
+async def test_validation_repairs_stop_after_six(app, monkeypatch):
     engine = app.state.engine
     run = make_run(app)
     calls = []
@@ -198,15 +198,14 @@ async def test_validation_repairs_exceed_ten_and_still_require_valid_edits(app, 
         calls.append(payload)
         if payload["tool_round"] == 0:
             return action(search=[search("zzzz")])
-        if len(calls) < 15:
-            return action()  # Unresolved reference must be rejected each time.
-        assert "repair_feedback" in payload
-        return action(reference_edits=[{"id": "p1-reference-0", "key": "bibliography:zzzzzzzzzzzzzzzzzzzz"}])
+        return action()  # Every repair is validly shaped but leaves the reference unresolved.
 
     monkeypatch.setattr(engine.providers, "generate", generate)
-    _, index = await engine.references(run, source(), [], {})
-    assert len(calls) == 15
-    assert not symbol_problems(index)["unresolved_references"]
+    with pytest.raises(WorkflowError) as error:
+        await engine.references(run, source(), [], {})
+    assert error.value.code == "REPAIR_LIMIT"
+    assert "6" in error.value.message
+    assert len(calls) == 8  # Initial query, one tool round, and six repair requests.
 
 
 @pytest.mark.asyncio

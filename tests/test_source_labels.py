@@ -3,6 +3,7 @@
 import shutil
 import pytest
 from bookanalyst.documents import validate_conversion, namespace, render_document
+from bookanalyst.engine import REPAIR_ATTEMPTS_PER_ROUND
 from bookanalyst.numbering import LABEL_NAME, collect_symbols, symbol_problems
 from bookanalyst.store import WorkflowError
 from bookanalyst.tex import compile_tex
@@ -78,16 +79,16 @@ async def test_invalid_batch_is_not_passed_and_validator_fix_reuses_saved_respon
 
     monkeypatch.setattr(engine.providers, "generate", generate)
     monkeypatch.setattr("bookanalyst.engine.validate_conversion", old_validator)
-    with pytest.raises(WorkflowError, match="10 次自动修复上限"):
+    with pytest.raises(WorkflowError, match=f"{REPAIR_ATTEMPTS_PER_ROUND} 次自动修复上限"):
         await engine.convert(run, task, {"rules": ""})
     current = next(t for t in store.tasks(run["id"]) if t["id"] == task["id"])
     assert current["state"] == "NEEDS_REVIEW"
     path = store.directory(run["id"]) / "batches" / (task["id"] + ".json")
-    assert not path.exists() and len(calls) == 11
+    assert not path.exists() and len(calls) == REPAIR_ATTEMPTS_PER_ROUND + 1
     monkeypatch.setattr("bookanalyst.engine.validate_conversion", validate_conversion)
     fixed = await engine.convert(run, task, {"rules": ""})
     assert fixed["pages"][0]["tex"] == candidate["pages"][0]["tex"]
-    assert path.exists() and len(calls) == 11
+    assert path.exists() and len(calls) == REPAIR_ATTEMPTS_PER_ROUND + 1
     assert (
         next(t for t in store.tasks(run["id"]) if t["id"] == task["id"])["state"]
         == "PASSED"

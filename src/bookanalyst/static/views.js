@@ -41,9 +41,13 @@ export function requestHistory(result, offset = 0) {
     <div class="table-wrap"><table class="request-table"><thead><tr><th>用途 / 批次</th><th>当前结果</th><th>原因 / 说明</th><th>模型 / 思考</th><th>尝试记录</th></tr></thead><tbody>${result.rows.map((r) => {
       const pages = r.pages?.length ? `PDF ${r.pages.join(", ")} 页` : "";
       const error = r.error_message || r.error || "未记录具体原因";
+      const recovered = r.state === "RECOVERED";
+      const reason = recovered
+        ? `此前失败 ${r.failed_count} 次，已恢复`
+        : `${e(r.reason)}<small>${e(error)}</small>`;
       return `<tr><td>${e(requestPurpose(r))}<small>${e(r.task_id || "")}</small><small>${e(pages)}</small></td>
         <td>${badge(r.state)}<small>共 ${r.attempt_count} 次 · 失败 ${r.failed_count} 次</small></td>
-        <td class="request-error">${r.failed_count || r.state === "DEFERRED" ? `${r.state === "RECOVERED" ? "此前：" : ""}${e(r.reason)}<small>${e(error)}</small>` : "—"}</td>
+        <td class="request-error">${r.failed_count || r.state === "DEFERRED" ? reason : "—"}</td>
         <td>${e(r.model || "未知")}<small>思考 ${e(r.effort || "默认")}</small></td>
         <td><details data-request-group="${e(r.group_id)}"><summary>查看 ${r.attempt_count} 次尝试</summary><ol class="request-attempts">${[...r.attempts].reverse().map((a, i) =>
           `<li>第 ${i + 1} 次 · ${e(stateNames[a.state] || a.state)} · ${a.seconds} 秒<small>${e(a.model || "未知")} / ${e(a.effort || "默认")} · 输入 / 输出：${e(requestTokens(a))}</small>${a.error || a.error_message ? `<p class="error">${e(a.error_message || a.error)}</p>` : ""}<small>请求 ${e(a.id)}</small></li>`

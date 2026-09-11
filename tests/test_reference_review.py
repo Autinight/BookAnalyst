@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from bookanalyst.numbering import apply_symbol_edits, collect_symbols, reference_groups, symbol_problems, validate_reference_group
+from bookanalyst.numbering import apply_symbol_edits, collect_symbols, deferrable_duplicate_reference_ids, reference_groups, symbol_problems, validate_reference_group
 from bookanalyst.reference_tools import REFERENCE_CONFIRMATION_INSTRUCTION
 from bookanalyst.reference_repair import validate_repair_requests
 from bookanalyst.store import WorkflowError, atomic_json, digest
@@ -106,6 +106,31 @@ def test_general_deferral_has_narrow_ownership(case):
     with pytest.raises(WorkflowError) as exc:
         validate_reference_group(collect_symbols(results, []), group, changes)
     assert exc.value.code == "REFERENCE_REVIEW"
+
+
+def test_duplicate_phase_defers_only_unbound_cross_group_references():
+    results = [
+        batch(1, r"See \ref{equation:3.3}."),
+        batch(2, r"\begin{equation}x=1\label{equation:3.3}\end{equation}"),
+        batch(3, r"\begin{equation}y=2\label{equation:3.3}\end{equation}"),
+    ]
+    index = collect_symbols(results, [])
+    group = next(g for g in reference_groups(index, "duplicates") if g["keys"] == ["equation:3.3"])
+    ref = group["references"][0]
+    edits = [{"id": item, "key": f"equation:3.3:s{i}"} for i, item in enumerate(group["label_ids"])]
+    changes = action(label_edits=edits, unconfirmed_references=[
+        {"id": ref["id"], "reason": "The matching target is outside this duplicate-label group."},
+    ])
+    assert deferrable_duplicate_reference_ids(index, group, changes) == {ref["id"]}
+    validate_reference_group(index, group, changes)
+    fixed, updated = apply_symbol_edits(
+        results, [], {"label_edits": edits, "reference_edits": []}, require_resolved=False
+    )
+    assert r"\ref{equation:3.3}" in fixed[0]["pages"][0]["tex"]
+    assert not symbol_problems(updated)["duplicate_labels"]
+    assert [r["id"] for r in symbol_problems(updated)["unresolved_references"]] == [ref["id"]]
+    with pytest.raises(WorkflowError):
+        validate_reference_group(index, group, action(unconfirmed_references=changes["unconfirmed_references"]))
 
 
 def test_general_deferral_does_not_hide_other_errors_or_mix_with_repair():
