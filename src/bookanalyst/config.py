@@ -17,6 +17,7 @@ DEFAULT_SETTINGS = {
     "default_connection": "openai_subscription",
     "connections": {
         "openai_subscription": {
+            "name": "ChatGPT 官方订阅",
             "kind": "codex_chatgpt",
             "enabled": True,
             "model_id": "",
@@ -24,6 +25,7 @@ DEFAULT_SETTINGS = {
             "timeout_seconds": 600,
         },
         "custom_api": {
+            "name": "自定义 API / vLLM",
             "kind": "openai_compatible",
             "enabled": False,
             "base_url": "",
@@ -68,6 +70,11 @@ def validate_settings(value):
         if not re.fullmatch(r"[a-zA-Z0-9_-]{1,80}", name):
             raise WorkflowError("INVALID_CONFIG", "连接名称格式无效", 422)
         kind = conn.get("kind")
+        if "name" in conn:
+            display_name = conn["name"]
+            if not isinstance(display_name, str) or not display_name.strip() or len(display_name.strip()) > 100:
+                raise WorkflowError("INVALID_CONFIG", "供应商名称须为 1–100 个字符", 422)
+            conn["name"] = display_name.strip()
         allowed = set(
             DEFAULT_SETTINGS["connections"][
                 "openai_subscription" if kind == "codex_chatgpt" else "custom_api"

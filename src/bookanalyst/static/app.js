@@ -1,3 +1,4 @@
+import { addProvider, readConnections, refreshConnectionChoices, connectionName } from "./connections.js";
 import { api, setToken, escape as e } from "./api.js";
 import * as views from "./views.js";
 import * as templateUI from "./templates.js";
@@ -340,35 +341,24 @@ document.addEventListener("click", async (event) => {
       button.disabled = false;
       return;
     }
-    if (button.id === "account-check") {
+    if (button.id === "add-provider") return addProvider($("#settings-form"), settings);
+    if (button.hasAttribute("data-connection-check") || button.hasAttribute("data-connection-login")) {
+      const card = button.closest("[data-connection-id]"), id = card.dataset.connectionId;
+      const status = card.querySelector("[data-connection-status]");
+      const login = button.hasAttribute("data-connection-login");
+      const action = login ? "login" : settings.connections[id].kind === "openai_compatible" ? "test" : "status";
       button.disabled = true;
-      const s = await api("/api/connections/openai_subscription/status");
-      $("#account-status").textContent =
-        s.status === "READY"
-          ? "连接正常 · " + s.models.map((m) => m.model || m.id).join("、")
-          : s.message || s.status;
-      button.disabled = false;
-    }
-    if (button.id === "custom-check") {
-      button.disabled = true;
-      const s = await api("/api/connections/custom_api/test", {
-        method: "POST",
-        body: {},
-      });
-      const names = s.models.map((m) => m.model || m.id).filter(Boolean);
-      $("#custom-status").textContent =
-        s.status === "READY"
-          ? `${s.message || "连接正常"}${names.length ? " · " + names.slice(0, 6).join("、") + (names.length > 6 ? "…" : "") : ""}`
-          : s.message || s.status;
-      button.disabled = false;
-    }
-    if (button.id === "login") {
-      const s = await api("/api/connections/openai_subscription/login", {
-        method: "POST",
-        body: {},
-      });
-      $("#account-status").innerHTML =
-        `<a href="${e(s.auth_url)}" target="_blank" rel="noopener">打开官方登录页面 ↗</a>`;
+      try {
+        const result = await api(`/api/connections/${encodeURIComponent(id)}/${action}`,
+          action === "status" ? {} : { method: "POST", body: {} });
+        if (login) status.innerHTML = `<a href="${e(result.auth_url)}" target="_blank" rel="noopener">打开官方登录页面 ↗</a>`;
+        else {
+          const names = (result.models || []).map(m => m.model || m.id).filter(Boolean);
+          status.textContent = result.status === "READY"
+            ? `${result.message || "连接正常"}${names.length ? " · " + names.slice(0, 6).join("、") + (names.length > 6 ? "…" : "") : ""}`
+            : result.message || result.status;
+        }
+      } finally { button.disabled = false; }
     }
   } catch (error) {
     button.disabled = false;
@@ -405,6 +395,15 @@ document.addEventListener("change", async (event) => {
   }
 });
 document.addEventListener("input", event => {
+  if (event.target.hasAttribute("data-connection-field")) {
+    const card = event.target.closest("[data-connection-id]"), id = card.dataset.connectionId;
+    const field = event.target.dataset.connectionField;
+    if (["name", "enabled", "model_id"].includes(field)) {
+      settings.connections[id][field] = event.target.type === "checkbox" ? event.target.checked : event.target.value.trim();
+      card.querySelector("[data-connection-title]").textContent = connectionName(id, settings.connections[id]);
+      refreshConnectionChoices($("#settings-form"), settings);
+    }
+  }
   if (event.target.id === "library-search") {
     libraryState.query = event.target.value;
     filterLibrary();
@@ -485,27 +484,8 @@ document.addEventListener("submit", async (event) => {
   const button = event.target.querySelector('[type="submit"]');
   button.disabled = true;
   try {
-    const f = new FormData(event.target),
-      s = structuredClone(settings),
-      o = s.connections.openai_subscription,
-      c = s.connections.custom_api;
-    Object.assign(o, {
-      model_id: f.get("official_model"),
-      max_in_flight: Number(f.get("official_concurrency")),
-      timeout_seconds: Number(f.get("official_timeout")),
-    });
-    Object.assign(c, {
-      enabled: f.has("custom_enabled"),
-      base_url: f.get("custom_url"),
-      protocol: f.get("custom_protocol"),
-      model_id: f.get("custom_model"),
-      auth_mode: f.get("custom_auth"),
-      api_key: f.get("custom_key"),
-      clear_api_key: f.has("custom_clear"),
-      image_support: f.get("image_support"),
-      max_in_flight: Number(f.get("custom_concurrency")),
-      timeout_seconds: Number(f.get("custom_timeout")),
-    });
+    const f = new FormData(event.target), s = structuredClone(settings);
+    s.connections = readConnections(event.target, settings);
     s.stage_models = readStageModels(event.target, data.model_stages);
     s.llm_concurrency = Number(f.get("workflow_concurrency"));
     settings = await api("/api/settings", { method: "PUT", body: s });

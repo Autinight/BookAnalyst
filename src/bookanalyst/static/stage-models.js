@@ -1,3 +1,4 @@
+import { connectionName } from "./connections.js";
 import { api, escape as e } from "./api.js";
 
 const efforts = ["low", "medium", "high", "xhigh", "max"];
@@ -6,7 +7,7 @@ export function stageModelSettings(settings, stages) {
     const binding = settings.stage_models[stage];
     const connections = Object.entries(settings.connections)
       .filter(([id, conn]) => conn.enabled || id === binding.connection_id)
-      .map(([id, conn]) => `<option value="${e(id)}"${id === binding.connection_id ? " selected" : ""}>${conn.kind === "codex_chatgpt" ? "ChatGPT 官方订阅" : e(id)}</option>`).join("");
+      .map(([id, conn]) => `<option value="${e(id)}"${id === binding.connection_id ? " selected" : ""}>${e(connectionName(id, conn))}</option>`).join("");
     return `<div class="stage-model-row" data-model-stage="${stage}">
       <div class="stage-model-title">${e(title)}</div>
       <label><span>模型连接</span><select name="stage_${stage}_connection" data-stage-connection>${connections}</select></label>

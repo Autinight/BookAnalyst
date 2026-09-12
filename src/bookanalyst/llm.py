@@ -733,7 +733,9 @@ class Providers:
             config["plugins"] = {name: {"enabled": False} for name in plugins}
         thread = await sdk.thread_start(
             model=binding["model_id"],
-            ephemeral=False,
+            # One-shot workers keep their results in BookAnalyst's request journal.
+            # Persisting each packet also fills the user's Codex task history.
+            ephemeral=True,
             approval_mode=ApprovalMode.deny_all,
             config=config,
             cwd=str(packet),

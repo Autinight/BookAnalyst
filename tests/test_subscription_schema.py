@@ -87,3 +87,11 @@ async def test_subscription_wire_schema_and_rejection(app, monkeypatch, rejectio
     else:
         assert await providers.generate(run, "model", "convert", "page", Conversion.model_json_schema()) == value
     assert len(starts) == 1
+    assert starts[0]["ephemeral"] is True
+    if not rejection:
+        # Local receipts remain recoverable without a persisted Codex thread.
+        call = store.calls(run["id"])[0]
+        store.finish_call(call["id"], "RESULT_UNKNOWN")
+        report = await providers.reconcile(run)
+        assert report == [{"call_id": call["id"], "status": "RECOVERED"}]
+        assert len(starts) == 1

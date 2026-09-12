@@ -1,3 +1,4 @@
+import { connectionCard } from "./connections.js";
 import { stageModelSettings } from "./stage-models.js";
 import { escape as e } from "./api.js";
 export const stateNames = {
@@ -134,10 +135,11 @@ export function runView(r, stages) {
   );
 }
 export function settings(s, stages) {
-  const o = s.connections.openai_subscription,
-    c = s.connections.custom_api;
-  return (
-    head("模型设置", "分别设置各阶段的模型、思考强度与连接。") +
-    `<form id="settings-form">${stageModelSettings(s, stages)}<h2>模型连接</h2><div class="settings-grid"><section class="card"><h2>ChatGPT 官方订阅</h2><label>默认模型<input name="official_model" value="${e(o.model_id)}" placeholder="使用上游默认模型"></label><div class="fields"><label>连接并发<input type="number" name="official_concurrency" value="${o.max_in_flight}" min="1"></label><label>请求等待（秒）<input type="number" name="official_timeout" value="${o.timeout_seconds}" min="1" max="3600"></label></div><div class="row"><button type="button" id="account-check">检查连接</button><button type="button" id="login">登录</button></div><p id="account-status" class="hint"></p></section><section class="card"><h2>自定义 API / vLLM</h2><label class="check"><input type="checkbox" name="custom_enabled" ${c.enabled ? "checked" : ""}>启用</label><label>API 地址<input name="custom_url" value="${e(c.base_url)}"></label><div class="fields"><label>协议<select name="custom_protocol"><option value="chat_completions">Chat Completions</option><option value="responses" ${c.protocol === "responses" ? "selected" : ""}>Responses</option></select></label><label>模型<input name="custom_model" value="${e(c.model_id)}"></label><label>鉴权<select name="custom_auth"><option value="bearer">Bearer</option><option value="none" ${c.auth_mode === "none" ? "selected" : ""}>本地无鉴权</option></select></label><label>API 密钥<input type="password" name="custom_key" autocomplete="new-password" spellcheck="false" autocapitalize="off" placeholder="${c.api_key_configured ? "已配置，留空保留现有密钥" : "粘贴 API 密钥"}"><small>${c.api_key_configured ? "填写新密钥即可替换。" : "密钥保存在本机，保存后不回显。"}</small></label><label>连接并发<input type="number" name="custom_concurrency" min="1" value="${c.max_in_flight}"></label><label>请求等待（秒）<input type="number" name="custom_timeout" min="1" max="3600" value="${c.timeout_seconds}"></label></div>${c.api_key_configured ? '<label class="check"><input type="checkbox" name="custom_clear">清除已保存密钥</label>' : ""}<label>图像支持<select name="image_support"><option value="unknown">待确认</option><option value="supported" ${c.image_support === "supported" ? "selected" : ""}>已确认支持</option><option value="unsupported" ${c.image_support === "unsupported" ? "selected" : ""}>不支持</option></select></label><div class="row"><button type="button" id="custom-check">检查连接</button></div><p id="custom-status" class="hint"></p></section></div><p id="settings-error" class="error"></p><button type="submit" class="primary">保存设置</button></form>`
-  );
+  return head("模型设置", "分别设置各阶段的模型、思考强度与连接。") +
+    `<form id="settings-form">${stageModelSettings(s, stages)}
+      <div class="row"><h2>模型连接</h2><button type="button" id="add-provider">添加 API 供应商</button></div>
+      <p class="hint">可添加多个供应商，直接修改供应商名称即可重命名。填写后点击“保存设置”。</p>
+      <div class="settings-grid" id="connection-cards">${Object.entries(s.connections).map(([id, conn]) => connectionCard(id, conn)).join("")}</div>
+      <p id="settings-error" class="error" role="alert"></p><button type="submit" class="primary">保存设置</button>
+    </form>`;
 }
