@@ -51,7 +51,7 @@ class Operation(StrictModel):
 class RunModelUpdate(Operation):
     model: Binding | None = None
     structure_effort: Literal["low", "medium", "high", "xhigh", "max"] = "xhigh"
-    llm_concurrency: int = Field(2, ge=1)
+    llm_concurrency: int | None = Field(None, ge=1)
 
 
 class StartOperation(Operation):

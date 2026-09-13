@@ -428,7 +428,7 @@ async def test_custom_api_sends_owned_images_without_token_limits(
 
 
 @pytest.mark.asyncio
-async def test_pause_prevents_new_request_after_waiting_for_connection(
+async def test_pause_prevents_new_request_after_waiting_for_task_slot(
     app, monkeypatch
 ):
     providers = app.state.engine.providers
@@ -437,9 +437,8 @@ async def test_pause_prevents_new_request_after_waiting_for_connection(
     run["config"]["model"]["model_id"] = "test-model"
     store.put("run", run["id"], run)
     limit = asyncio.Semaphore(0)
-    providers.limits[("openai_subscription", 2)] = limit
     task = asyncio.create_task(
-        providers.generate(run, "model", "convert", "prompt", {"type": "object"})
+        providers.generate(run, "model", "convert", "prompt", {"type": "object"}, semaphore=limit)
     )
     await asyncio.sleep(0)
     store.change(run["id"], lambda r: r.update(pause_requested=True))

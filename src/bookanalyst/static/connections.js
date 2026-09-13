@@ -18,7 +18,7 @@ export function connectionCard(id, conn, unsaved = false) {
       ${conn.api_key_configured ? '<label class="check"><input type="checkbox" data-connection-field="clear_api_key">清除已保存密钥</label>' : ""}
       ${select("image_support", "图像支持", [["unknown", "待确认"], ["supported", "已确认支持"], ["unsupported", "不支持"]])}`
       : input("model_id", "默认模型", "text", 'placeholder="使用上游默认模型"')}
-    <div class="fields">${input("max_in_flight", "连接并发", "number", 'min="1" required')}${input("timeout_seconds", "请求等待（秒）", "number", 'min="1" max="3600" required')}</div>
+    <div class="fields">${conn.max_in_flight !== undefined ? input("max_in_flight", "连接并发", "number", 'min="1" required') : ""}${input("timeout_seconds", "请求等待（秒）", "number", 'min="1" max="3600" required')}</div>
     <div class="row"><button type="button" data-connection-check ${unsaved ? "disabled" : ""}>检查连接</button>${custom ? "" : '<button type="button" data-connection-login>登录</button>'}</div>
     <p class="hint" data-connection-status>${unsaved ? "保存设置后可检查连接。" : "检查使用已保存的设置。"}</p>
   </section>`;
@@ -50,8 +50,11 @@ export function addProvider(form, settings) {
   const conn = {
     name: "新 API 供应商", kind: "openai_compatible", enabled: false,
     base_url: "", protocol: "chat_completions", model_id: "", auth_mode: "bearer",
-    image_support: "unknown", max_in_flight: 2, timeout_seconds: 600,
+    image_support: "unknown", timeout_seconds: 600,
   };
+  // Static assets can refresh while an older server is still running a book.
+  const legacy = Object.values(settings.connections).find(c => c.max_in_flight !== undefined);
+  if (legacy) conn.max_in_flight = legacy.max_in_flight;
   settings.connections[id] = conn;
   form.querySelector("#connection-cards").insertAdjacentHTML("beforeend", connectionCard(id, conn, true));
   const list = document.createElement("datalist");

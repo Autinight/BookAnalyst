@@ -69,7 +69,10 @@ class Conversion(Result):
     assets: list[Asset]
     head: Literal["closed", "paragraph", "math", "environment", "unknown"]
     tail: Literal["closed", "paragraph", "math", "environment", "unknown"]
-    unclosed_environments: list[UnclosedEnvironment] = Field(default_factory=list)
+    unclosed_environments: list[UnclosedEnvironment] = Field(
+        default_factory=list,
+        description="Return []; the program derives this report from the page TeX.",
+    )
 
 
 class Seam(Result):
@@ -89,7 +92,7 @@ class SeamEnvironmentAction(Result):
     read_pages: list[int] = Field(description="Pages to request NEXT, not pages already inspected. Must be [] when resolved=true.")
     resolved: bool = Field(description="True when this environment pair is resolved; then read_pages must be [].")
     closing_page: int | None
-    note: str = Field(min_length=1, max_length=400)
+    note: str = Field(min_length=1)
 
 
 class Headings(Result):
@@ -208,9 +211,8 @@ for a numbered caption put the native figure label immediately after caption.
 Body only: no preamble, macro definitions or file operations. Join words broken solely
 by typesetting. Join pages inside your batch. At batch edges preserve partial sentences,
 formulas and open environments; set head/tail accordingly.
-Also report unclosed_environments independently of head/tail: every environment begun
-in this batch but not ended by its last page, outermost first, as {name,begin_page}.
-The program fills exact begin_line and label. Do not close an environment just to finish
+Return [] for unclosed_environments; the program derives the report directly from
+the page TeX, independently of head/tail. Do not close an environment just to finish
 your batch; do not invent a begin for a continuation from unseen pages.
 Do not query other pages,
 invent absent content or write an OCR change ledger. Preserve all labels and references."""
@@ -284,11 +286,11 @@ def validate_conversion(result, pages):
     ]:
         ids = [item["id"] for item in result[group]]
         if len(ids) != len(set(ids)) or any(
-            not re.fullmatch(r"[A-Za-z0-9-]+", x) for x in ids
+            not re.fullmatch(r"[^\s{}\\%]+", x) for x in ids
         ):
             raise WorkflowError("INVALID_ID", "标题或图像 ID 重复或格式无效")
         used = re.findall(
-            r"\\" + macro + r"\{([A-Za-z0-9-]+)\}",
+            r"\\" + macro + r"\{([^{}]*)\}",
             "\n".join(p["tex"] for p in result["pages"]),
         )
         if sorted(used) != sorted(ids):
@@ -307,10 +309,6 @@ def validate_conversion(result, pages):
                     f"PDF 第 {page['page']} 页的 {command} 标签 {key!r} 无效；"
                     "使用 环境:原书标识，允许原书的 Unicode 字符，不能含空白或 TeX 控制符",
                 )
-    actual = [(e["name"], e["begin_page"]) for e in environment_report(result["pages"])]
-    declared = [(e["name"], e["begin_page"]) for e in result.get("unclosed_environments", [])]
-    if declared != actual:
-        raise WorkflowError("ENVIRONMENT_REPORT", "unclosed_environments 与本批 TeX 不一致；按外层到内层报告 name/begin_page：" + str(actual))
     for h in result["headings"]:
         safe_tex(h["title"])
         safe_tex(h["number"])
@@ -324,22 +322,33 @@ def namespace(result, tid):
     import copy
 
     result = copy.deepcopy(result)
+    used = {item["id"] for group in ("headings", "assets") for item in result[group]}
     for group, macro in [
         ("headings", "BAHeading"),
         ("assets", "BAFigure"),
     ]:
-        for item in result[group]:
+        mapping = {}
+        for index, item in enumerate(result[group], 1):
             old = item["id"]
-            item["id"] = tid + "-" + old
-            for p in result["pages"]:
-                p["tex"] = p["tex"].replace(
-                    "\\" + macro + "{" + old + "}",
-                    "\\" + macro + "{" + item["id"] + "}",
-                )
+            local = old
+            if not re.fullmatch(r"[A-Za-z0-9-]+", old):
+                local = f"{group}-{index}"
+                while local in used:
+                    index += 1
+                    local = f"{group}-{index}"
+                used.add(local)
+            item["id"] = mapping[old] = tid + "-" + local
+        # Replace simultaneously: one generated ID may equal another original ID.
+        for page in result["pages"]:
+            page["tex"] = re.sub(
+                r"\\" + macro + r"\{([^{}]*)\}",
+                lambda match: "\\" + macro + "{" + mapping.get(match[1], match[1]) + "}",
+                page["tex"],
+            )
     return result
 
 
-# 接缝边界容差：模型抄写边界时允许的偏差（字符数）
+# 仅限片段边缘的对齐容差，不允许内部内容任意变化。
 SEAM_SLACK = 8
 
 
@@ -375,26 +384,110 @@ def _align_prefix(right, b):
     return None
 
 
+def _seam_space_view(text):
+    """Ignore horizontal line-end whitespace for matching; retain source offsets."""
+    chars, offsets = [], []
+    start = 0
+    for match in re.finditer(r"[ \t]+(?=\r?\n)", text):
+        chars.append(text[start:match.start()])
+        offsets.extend(range(start, match.start()))
+        start = match.end()
+    chars.append(text[start:])
+    offsets.extend(range(start, len(text)))
+    return "".join(chars), offsets
+
+
+def _align_seam(text, anchor, *, suffix=False):
+    align = _align_suffix if suffix else _align_prefix
+    fixed = align(text, anchor)
+    if fixed is not None:
+        return fixed
+    normalized, offsets = _seam_space_view(text)
+    copied, _ = _seam_space_view(anchor)
+    fixed = align(normalized, copied)
+    if not fixed:
+        return None
+    # Slice original TeX, so normalization cannot corrupt source offsets.
+    if suffix:
+        return text[offsets[len(normalized) - len(fixed)]:]
+    return text[:offsets[len(fixed) - 1] + 1]
+
+
+def _seam_mismatch(text, anchor, *, suffix=False):
+    # Diagnose the same whitespace-normalized views used by the matcher, but
+    # report positions and context in the original strings.
+    normalized, source_offsets = _seam_space_view(text)
+    copied_view, copied_offsets = _seam_space_view(anchor)
+    source, copied = (normalized[::-1], copied_view[::-1]) if suffix else (normalized, copied_view)
+    common = 0
+    for a, b in zip(source, copied):
+        if a != b:
+            break
+        common += 1
+    def position(offsets, original):
+        index = len(offsets) - common - 1 if suffix else common
+        if index < 0:
+            return -1
+        return offsets[index] if index < len(offsets) else len(original)
+
+    source_pos = position(source_offsets, text)
+    copied_pos = position(copied_offsets, anchor)
+    field, edge = ("left_suffix", "左页末尾") if suffix else ("right_prefix", "右页开头")
+    names = {"\n": "换行", "\r": "回车", "\t": "制表符", " ": "空格", "\\": "反斜杠"}
+
+    def character(value, pos):
+        if pos < 0:
+            return "〈字符串起点之前〉"
+        if pos >= len(value):
+            return "〈字符串结束〉"
+        ch = value[pos]
+        return f"〈{names.get(ch, ch)} U+{ord(ch):04X}〉"
+
+    def describe(label, value, pos):
+        at = min(len(value), max(0, pos))
+        line = value.count("\n", 0, at) + 1
+        column = at - value.rfind("\n", 0, at)
+        context = "".join(
+            f"〈{names[ch]}〉" if ch in names and ch != " " else ch
+            for ch in value[max(0, at - 40):at + 60]
+        )
+        return (
+            f"{label}：偏移 {pos}，第 {line} 行第 {column} 列，字符 {character(value, pos)}。\n"
+            f"{label}上下文（特殊字符用〈名称〉显示）：{context}\n"
+        )
+
+    occurrence = normalized.rfind(copied_view) if suffix else normalized.find(copied_view)
+    if copied_view and occurrence >= 0:
+        gap = len(normalized) - occurrence - len(copied_view) if suffix else occurrence
+        reason = f"片段内容存在，但未对齐{edge}；忽略行末空白后距该边缘 {gap} 个字符。"
+    elif common and 0 <= source_pos < len(text) and 0 <= copied_pos < len(anchor):
+        reason = f"从{edge}比较，匹配片段内部内容不一致。"
+    else:
+        reason = f"未能匹配{edge}；下面是从该边缘比较的首个差异。"
+    return (
+        f"{field}：{reason}\n"
+        "首个差异位置：偏移从 0 开始，行列从 1 开始，按 Unicode 字符计数。\n"
+        + describe("原文", text, source_pos)
+        + describe("候选", anchor, copied_pos)
+        + f"仅允许片段边缘最多 {SEAM_SLACK} 字符的对齐调整及忽略行末空格/制表符；不允许内部内容任意变化。\n"
+        "请从 left_tex/right_tex 原样复制边界片段，保留换行和空格；"
+        "需要改写的内容只放在 replacement 中。"
+    )
+
+
+
 def apply_seam(left, right, patch):
     a, b = patch["left_suffix"], patch["right_prefix"]
     if not a and not b:
         if patch["replacement"]:
             raise WorkflowError("INVALID_PATCH", "空接缝不能插入额外内容")
         return left, right
-    fixed_a = _align_suffix(left, a) if a else ""
-    fixed_b = _align_prefix(right, b) if b else ""
+    fixed_a = _align_seam(left, a, suffix=True) if a else ""
+    fixed_b = _align_seam(right, b) if b else ""
     if fixed_a is None or fixed_b is None:
         if fixed_a is None:
-            raise WorkflowError(
-                "STALE_PATCH",
-                "left_suffix 贴不到左页末尾（容差 %d 字符）。原文末尾：%s  候选末尾：%s"
-                % (SEAM_SLACK, left[-60:], a[-60:]),
-            )
-        raise WorkflowError(
-            "STALE_PATCH",
-            "right_prefix 贴不到右页开头（容差 %d 字符）。原文开头：%s  候选开头：%s"
-            % (SEAM_SLACK, right[:60], b[:60]),
-        )
+            raise WorkflowError("STALE_PATCH", _seam_mismatch(left, a, suffix=True))
+        raise WorkflowError("STALE_PATCH", _seam_mismatch(right, b))
     a, b = fixed_a, fixed_b
     safe_body(patch["replacement"])
     before = MARKERS.findall(a + b)
@@ -406,7 +499,21 @@ def apply_seam(left, right, patch):
 
 PREAMBLE = r"""\usepackage{amsmath,amssymb,amsthm,mathtools,graphicx,hyperref}
 \newcommand{\BAHeading}[1]{\csname bah#1\endcsname}
-\newcommand{\BAFigure}[1]{\includegraphics[width=\linewidth,keepaspectratio]{assets/#1.png}}
+\newsavebox{\BAFigureBox}
+\newcommand{\BAFigure}[1]{%
+  \begingroup
+  \sbox{\BAFigureBox}{\includegraphics{assets/#1.png}}%
+  \ifdim\wd\BAFigureBox>\linewidth
+    \sbox{\BAFigureBox}{\resizebox{\linewidth}{!}{\usebox{\BAFigureBox}}}%
+  \fi
+  % Leave room for the caption; both limits only shrink the image.
+  \ifdim\dimexpr\ht\BAFigureBox+\dp\BAFigureBox\relax>.8\textheight
+    \resizebox*{!}{.8\textheight}{\usebox{\BAFigureBox}}%
+  \else
+    \usebox{\BAFigureBox}%
+  \fi
+  \endgroup%
+}
 \newenvironment{BAReferences}{\begin{enumerate}\renewcommand{\labelenumi}{[\theenumi]}}{\end{enumerate}}
 """
 
@@ -481,4 +588,3 @@ def open_environments(fragments):
                 elif stack and stack[-1] == name:
                     stack.pop()
     return stack
-

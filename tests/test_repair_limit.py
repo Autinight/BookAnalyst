@@ -163,3 +163,42 @@ async def test_manual_continue_gets_a_full_round_and_keeps_history(
                 store.get("run", rid), "counter-rules", "counter_repair"
             )
         assert error.value.code == "REPAIR_LIMIT"
+
+
+@pytest.mark.asyncio
+async def test_checked_validation_history_preserves_repair_limit_and_cached_recovery(app, monkeypatch):
+    from bookanalyst.documents import Seam
+    from bookanalyst.store import digest
+
+    engine, store = app.state.engine, app.state.store
+    run = make_run(app)
+    tid = "seam-0004"
+    candidate = {"left_suffix": "bad", "right_prefix": "", "replacement": ""}
+    calls = []
+
+    async def generate(current, role, purpose, *_):
+        call = store.reserve(run["id"], current["revision"], "llm", 1, {
+            "task_id": tid, "purpose": purpose, "repair": current["request_is_repair"],
+        })
+        store.finish_call(call, "COMPLETED", output_hash=digest(candidate))
+        calls.append(call)
+        return candidate
+
+    def reject(_):
+        raise WorkflowError("STALE_PATCH", "wrong boundary")
+
+    monkeypatch.setattr(engine.providers, "generate", generate)
+    with pytest.raises(WorkflowError) as error:
+        await engine.checked_ask(run, tid, "seams", {}, Seam, [], reject)
+    assert error.value.code == "REPAIR_LIMIT"
+    assert len(calls) == REPAIR_ATTEMPTS_PER_ROUND + 1
+    receipts = store.calls(run["id"])
+    assert all(c["state"] == "COMPLETED" and c["metadata"]["validation_state"] == "FAILED" for c in receipts)
+    assert store.tasks(run["id"], "seams")[0]["state"] == "NEEDS_REVIEW"
+
+    # The existing saved-candidate recovery still works, without another request.
+    accepted = await engine.checked_ask(run, tid, "seams", {}, Seam, [], lambda _: None)
+    assert accepted == candidate and len(calls) == REPAIR_ATTEMPTS_PER_ROUND + 1
+    last = store.calls(run["id"])[-1]["metadata"]
+    assert last["validation_state"] == "PASSED"
+    assert last["validation_error"]["code"] == "STALE_PATCH"

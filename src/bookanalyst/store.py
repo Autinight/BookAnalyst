@@ -262,6 +262,7 @@ class Store:
             "structure_effort": run["config"].get("structure_effort"),
             "stage_models": run["config"].get("stage_models"),
             "model_refresh_pending": run.get("model_refresh_pending", False),
+            "pending_llm_concurrency": run.get("pending_llm_concurrency"),
             "model_settings_updated_at": run.get("model_settings_updated_at"),
         }
 
@@ -296,6 +297,25 @@ class Store:
                 "UPDATE calls SET state=?,metadata=? WHERE id=?",
                 (state, encode(meta), key),
             )
+
+    def record_validation(self, rid, task_id, candidate, error=None):
+        """Attach content validation to its receipt; preserve request state and timing."""
+        if candidate is None:
+            return
+        with self.connection() as db:
+            row = db.execute(
+                "SELECT id,metadata FROM calls WHERE run_id=? AND state='COMPLETED' "
+                "AND json_extract(metadata,'$.task_id')=? "
+                "AND json_extract(metadata,'$.output_hash')=? ORDER BY rowid DESC LIMIT 1",
+                (rid, task_id, digest(candidate)),
+            ).fetchone()
+            if row is None:
+                return  # Mock providers and old caches may have no matching receipt.
+            meta = json.loads(row["metadata"])
+            meta["validation_state"] = "FAILED" if error else "PASSED"
+            if error:
+                meta["validation_error"] = {"code": error.code, "message": error.message}
+            db.execute("UPDATE calls SET metadata=? WHERE id=?", (encode(meta), row["id"]))
 
     def calls(self, rid):
         with self.connection() as db:

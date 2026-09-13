@@ -63,7 +63,7 @@ def refresh_pending(store, rid):
     def apply(current):
         if current.get("model_refresh_pending"):
             current["config"].update(stage_models=bindings,
-                                     llm_concurrency=settings.get("llm_concurrency", current["config"]["llm_concurrency"]))
+                                     llm_concurrency=current.pop("pending_llm_concurrency", settings.get("llm_concurrency", current["config"]["llm_concurrency"])))
             current["model_refresh_pending"] = False
             current["model_settings_updated_at"] = time.time()
     return store.change(rid, apply)

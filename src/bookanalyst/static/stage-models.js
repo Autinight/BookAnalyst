@@ -21,7 +21,7 @@ export function stageModelSettings(settings, stages) {
     ${Object.keys(settings.connections).map(id => `<datalist id="stage-models-${e(id)}"></datalist>`).join("")}
     <p class="hint">模型可从建议列表选择，也可填写模型 ID；留空使用该连接的默认模型。公共 TeX 由程序按全书规则生成，无独立模型请求。</p>
     <label class="workflow-concurrency">并行任务数<input name="workflow_concurrency" type="number" min="1" required value="${settings.llm_concurrency}"></label>
-    <p class="hint">用于新任务，并随“更新模型配置”应用到已有任务；各连接的并发上限仍然有效。</p>
+    <p class="hint">新任务的默认并行批次数。已有任务可在运行页修改，并点击“更新配置”；多个任务分别使用各自的并行任务数。</p>
   </section>`;
 }
 

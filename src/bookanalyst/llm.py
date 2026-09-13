@@ -82,7 +82,6 @@ class Providers:
         self.agent_sdk = None
         self.runtime = None
         self.sdk_lock = asyncio.Lock()
-        self.limits = {}
 
     async def codex(self):
         async with self.sdk_lock:
@@ -418,161 +417,156 @@ class Providers:
         conn = self.connection(binding["connection_id"])
         if not binding["model_id"]:
             raise WorkflowError("MODEL_UNAVAILABLE", "运行模型尚未冻结")
-        limit_key = (binding["connection_id"], conn["max_in_flight"])
-        limit = self.limits.setdefault(
-            limit_key, asyncio.Semaphore(conn["max_in_flight"])
-        )
         async with semaphore or asyncio.Semaphore(1):
-            async with limit:
+            if self.store.get("run", run["id"]).get("pause_requested"):
+                raise WorkflowError("PAUSED", "已停止派发并保存完成结果")
+            metadata = dict(
+                role=role,
+                model_id=binding["model_id"],
+                prompt_version="0.7.0",
+                input_hash=digest(
+                    {
+                        "prompt": prompt,
+                        "schema": schema,
+                        "images": [digest(p.read_bytes()) for p in images],
+                    }
+                ),
+                purpose=purpose,
+                task_id=run.get("request_task_id"),
+                phase=run.get("request_phase"),
+                repair=run.get("request_is_repair", False),
+                connection_id=binding["connection_id"],
+                reasoning_effort=binding.get("reasoning_effort", "medium"),
+            )
+            # A completed upstream response can exist before the engine checkpoint.
+            # Reuse that receipt after an interrupted process instead of paying twice.
+            for previous in reversed(self.store.calls(run["id"])):
+                meta = previous["metadata"]
+                if previous["state"] == "COMPLETED" and all(
+                    meta.get(k) == metadata[k]
+                    for k in (
+                        "input_hash",
+                        "model_id",
+                        "connection_id",
+                        "reasoning_effort",
+                        "prompt_version",
+                    )
+                ):
+                    saved = (
+                        self.store.root
+                        / "runs"
+                        / run["id"]
+                        / "requests"
+                        / previous["id"]
+                        / "response.json"
+                    )
+                    if saved.exists():
+                        return parse_json(
+                            json.loads(saved.read_text(encoding="utf-8"))["text"],
+                            schema,
+                        )
+            delay = REQUEST_RETRY_DELAY
+            last_error = None
+            for attempt in range(1, REQUEST_ATTEMPTS + 1):
                 if self.store.get("run", run["id"]).get("pause_requested"):
                     raise WorkflowError("PAUSED", "已停止派发并保存完成结果")
-                metadata = dict(
-                    role=role,
-                    model_id=binding["model_id"],
-                    prompt_version="0.7.0",
-                    input_hash=digest(
-                        {
-                            "prompt": prompt,
-                            "schema": schema,
-                            "images": [digest(p.read_bytes()) for p in images],
-                        }
-                    ),
-                    purpose=purpose,
-                    task_id=run.get("request_task_id"),
-                    phase=run.get("request_phase"),
-                    repair=run.get("request_is_repair", False),
-                    connection_id=binding["connection_id"],
-                    reasoning_effort=binding.get("reasoning_effort", "medium"),
+                call_id = self.store.reserve(
+                    run["id"], run["revision"], "llm", 1, metadata | {"attempt": attempt}
                 )
-                # A completed upstream response can exist before the engine checkpoint.
-                # Reuse that receipt after an interrupted process instead of paying twice.
-                for previous in reversed(self.store.calls(run["id"])):
-                    meta = previous["metadata"]
-                    if previous["state"] == "COMPLETED" and all(
-                        meta.get(k) == metadata[k]
-                        for k in (
-                            "input_hash",
-                            "model_id",
-                            "connection_id",
-                            "reasoning_effort",
-                            "prompt_version",
-                        )
-                    ):
-                        saved = (
-                            self.store.root
-                            / "runs"
-                            / run["id"]
-                            / "requests"
-                            / previous["id"]
-                            / "response.json"
-                        )
-                        if saved.exists():
-                            return parse_json(
-                                json.loads(saved.read_text(encoding="utf-8"))["text"],
+                directory = (
+                    self.store.root / "runs" / run["id"] / "requests" / call_id
+                )
+                atomic_json(
+                    directory / "request.json",
+                    metadata | {"prompt": prompt, "schema": schema, "attempt": attempt},
+                )
+                usage = None
+                try:
+                    async with asyncio.timeout(conn["timeout_seconds"]):
+                        if conn["kind"] == "codex_chatgpt":
+                            text, usage = await self._subscription(
+                                binding,
+                                prompt,
                                 schema,
+                                images,
+                                directory / "upstream.json",
                             )
-                delay = REQUEST_RETRY_DELAY
-                last_error = None
-                for attempt in range(1, REQUEST_ATTEMPTS + 1):
-                    if self.store.get("run", run["id"]).get("pause_requested"):
-                        raise WorkflowError("PAUSED", "已停止派发并保存完成结果")
-                    call_id = self.store.reserve(
-                        run["id"], run["revision"], "llm", 1, metadata | {"attempt": attempt}
-                    )
-                    directory = (
-                        self.store.root / "runs" / run["id"] / "requests" / call_id
-                    )
+                        else:
+                            text, usage = await self._custom(
+                                conn, binding, prompt, schema, images
+                            )
                     atomic_json(
-                        directory / "request.json",
-                        metadata | {"prompt": prompt, "schema": schema, "attempt": attempt},
+                        directory / "response.json",
+                        {"text": text, "usage": usage},
                     )
-                    usage = None
-                    try:
-                        async with asyncio.timeout(conn["timeout_seconds"]):
-                            if conn["kind"] == "codex_chatgpt":
-                                text, usage = await self._subscription(
-                                    binding,
-                                    prompt,
-                                    schema,
-                                    images,
-                                    directory / "upstream.json",
-                                )
-                            else:
-                                text, usage = await self._custom(
-                                    conn, binding, prompt, schema, images
-                                )
-                        atomic_json(
-                            directory / "response.json",
-                            {"text": text, "usage": usage},
-                        )
-                        result = parse_json(text, schema)
+                    result = parse_json(text, schema)
+                    self.store.finish_call(
+                        call_id,
+                        "COMPLETED",
+                        usage=usage,
+                        output_hash=digest(result),
+                        attempt=attempt,
+                    )
+                    return result
+                except asyncio.CancelledError:
+                    self.store.finish_call(call_id, "RESULT_UNKNOWN")
+                    raise
+                except WorkflowError as exc:
+                    if exc.code == "PAUSED":
                         self.store.finish_call(
-                            call_id,
-                            "COMPLETED",
-                            usage=usage,
-                            output_hash=digest(result),
-                            attempt=attempt,
+                            call_id, "FAILED", error_code=exc.code, usage=usage
                         )
-                        return result
-                    except asyncio.CancelledError:
-                        self.store.finish_call(call_id, "RESULT_UNKNOWN")
                         raise
-                    except WorkflowError as exc:
-                        if exc.code == "PAUSED":
-                            self.store.finish_call(
-                                call_id, "FAILED", error_code=exc.code, usage=usage
-                            )
-                            raise
-                        if exc.code == "SCHEMA_ERROR":
-                            self.store.finish_call(
-                                call_id, "FAILED", error_code=exc.code, usage=usage
-                            )
-                            raise
-                        retryable = self._retryable(exc)
-                        state = (
-                            "RESULT_UNKNOWN"
-                            if exc.code == "RESULT_UNKNOWN"
-                            else "FAILED"
-                        )
+                    if exc.code == "SCHEMA_ERROR":
                         self.store.finish_call(
-                            call_id, state, error_code=exc.code,
-                            error_message=exc.message, usage=usage
+                            call_id, "FAILED", error_code=exc.code, usage=usage
                         )
-                        last_error = WorkflowError(
-                            exc.code,
-                            exc.message,
-                            status=exc.status,
-                            review=exc.review,
-                            retryable=retryable,
-                        )
-                    except (TimeoutError, httpx.TimeoutException, httpx.TransportError):
-                        self.store.finish_call(call_id, "RESULT_UNKNOWN")
-                        last_error = WorkflowError(
-                            "RESULT_UNKNOWN",
-                            "模型请求超时或中断，未收到完整结果。可点击“重试未返回请求”继续；已有成果保留，上游可能重复计费。",
-                            review=True,
-                            retryable=True,
-                        )
-                    except Exception:
-                        self.store.finish_call(
-                            call_id, "FAILED", error_code="REQUEST_FAILED"
-                        )
-                        last_error = WorkflowError(
-                            "REQUEST_FAILED",
-                            "模型连接调用失败，请检查配置和服务状态",
-                            retryable=True,
-                        )
-                    if (
-                        last_error is None
-                        or not last_error.retryable
-                        or attempt >= REQUEST_ATTEMPTS
-                    ):
-                        break
-                    await asyncio.sleep(delay)
-                    delay = min(REQUEST_RETRY_DELAY_MAX, delay * 2)
-                if last_error and last_error.retryable:
-                    self._mark_retry_exhausted(run["id"], metadata["input_hash"])
-                raise last_error
+                        raise
+                    retryable = self._retryable(exc)
+                    state = (
+                        "RESULT_UNKNOWN"
+                        if exc.code == "RESULT_UNKNOWN"
+                        else "FAILED"
+                    )
+                    self.store.finish_call(
+                        call_id, state, error_code=exc.code,
+                        error_message=exc.message, usage=usage
+                    )
+                    last_error = WorkflowError(
+                        exc.code,
+                        exc.message,
+                        status=exc.status,
+                        review=exc.review,
+                        retryable=retryable,
+                    )
+                except (TimeoutError, httpx.TimeoutException, httpx.TransportError):
+                    self.store.finish_call(call_id, "RESULT_UNKNOWN")
+                    last_error = WorkflowError(
+                        "RESULT_UNKNOWN",
+                        "模型请求超时或中断，未收到完整结果。可点击“重试未返回请求”继续；已有成果保留，上游可能重复计费。",
+                        review=True,
+                        retryable=True,
+                    )
+                except Exception:
+                    self.store.finish_call(
+                        call_id, "FAILED", error_code="REQUEST_FAILED"
+                    )
+                    last_error = WorkflowError(
+                        "REQUEST_FAILED",
+                        "模型连接调用失败，请检查配置和服务状态",
+                        retryable=True,
+                    )
+                if (
+                    last_error is None
+                    or not last_error.retryable
+                    or attempt >= REQUEST_ATTEMPTS
+                ):
+                    break
+                await asyncio.sleep(delay)
+                delay = min(REQUEST_RETRY_DELAY_MAX, delay * 2)
+            if last_error and last_error.retryable:
+                self._mark_retry_exhausted(run["id"], metadata["input_hash"])
+            raise last_error
 
     async def reconcile(self, run):
         """Read already-started subscription turns; this never starts model inference."""

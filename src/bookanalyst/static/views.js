@@ -18,6 +18,11 @@ export const stateNames = {
   ABANDONED: "已放弃",
   PASSED: "已通过",
   COMPLETED: "已完成",
+  RETURNED: "已返回",
+  VALIDATING: "结果处理中",
+  VALIDATION_FAILED: "校验未通过",
+  REPAIRING: "修复中",
+  REPAIR_EXHAUSTED: "修复达上限",
   BOOK_ACCEPTED: "旧版已完成",
 };
 export const badge = (s) =>
@@ -42,16 +47,14 @@ export function requestHistory(result, offset = 0) {
     <div class="table-wrap"><table class="request-table"><thead><tr><th>用途 / 批次</th><th>当前结果</th><th>原因 / 说明</th><th>模型 / 思考</th><th>尝试记录</th></tr></thead><tbody>${result.rows.map((r) => {
       const pages = r.pages?.length ? `PDF ${r.pages.join(", ")} 页` : "";
       const error = r.error_message || r.error || "未记录具体原因";
-      const recovered = r.state === "RECOVERED";
-      const reason = recovered
-        ? `此前失败 ${r.failed_count} 次，已恢复`
-        : `${e(r.reason)}<small>${e(error)}</small>`;
+      const reason = r.reason || r.error || r.error_message
+        ? `${e(r.reason || "")}<small>${e(error)}</small>` : "—";
       return `<tr><td>${e(requestPurpose(r))}<small>${e(r.task_id || "")}</small><small>${e(pages)}</small></td>
-        <td>${badge(r.state)}<small>共 ${r.attempt_count} 次 · 失败 ${r.failed_count} 次</small></td>
-        <td class="request-error">${r.failed_count || r.state === "DEFERRED" ? reason : "—"}</td>
+        <td>${badge(r.state)}<small>共 ${r.attempt_count} 次 · 请求失败 ${r.failed_count} 次 · 校验失败 ${r.validation_failed_count || 0} 次</small>${r.repair_count ? `<small>曾修复 ${r.repair_count} 次</small>` : ""}</td>
+        <td class="request-error">${reason}</td>
         <td>${e(r.model || "未知")}<small>思考 ${e(r.effort || "默认")}</small></td>
         <td><details data-request-group="${e(r.group_id)}"><summary>查看 ${r.attempt_count} 次尝试</summary><ol class="request-attempts">${[...r.attempts].reverse().map((a, i) =>
-          `<li>第 ${i + 1} 次 · ${e(stateNames[a.state] || a.state)} · ${a.seconds} 秒<small>${e(a.model || "未知")} / ${e(a.effort || "默认")} · 输入 / 输出：${e(requestTokens(a))}</small>${a.error || a.error_message ? `<p class="error">${e(a.error_message || a.error)}</p>` : ""}<small>请求 ${e(a.id)}</small></li>`
+          `<li>第 ${i + 1} 次 · ${e(a.state === "COMPLETED" ? "已返回" : a.error === "SCHEMA_ERROR" ? "已返回" : stateNames[a.state] || a.state)}${a.validation_state === "PASSED" ? " · 校验通过" : a.validation_state === "FAILED" || a.error === "SCHEMA_ERROR" ? " · 校验未通过" : ""} · ${a.seconds} 秒<small>${e(a.model || "未知")} / ${e(a.effort || "默认")} · 输入 / 输出：${e(requestTokens(a))}</small>${a.error || a.error_message ? `<p class="error">${e(a.error_message || a.error)}</p>` : ""}${a.validation_error ? `<p class="error">${a.validation_state === "PASSED" ? "曾校验失败：" : "校验失败："}${e(a.validation_error.message || a.validation_error.code)}</p>` : ""}<small>请求 ${e(a.id)}</small></li>`
         ).join("")}</ol></details></td></tr>`;
     }).join("") || '<tr><td colspan="5">尚未发出请求</td></tr>'}</tbody></table></div>
     <div class="row"><button data-requests-offset="${Math.max(0, offset - 50)}" ${offset === 0 ? "disabled" : ""}>上一页</button><span class="hint">${result.total ? offset + 1 : 0}–${Math.min(offset + result.rows.length, result.total)} / ${result.total} 组</span><button data-requests-offset="${offset + 50}" ${offset + result.rows.length >= result.total ? "disabled" : ""}>下一页</button></div>`;
@@ -107,7 +110,7 @@ export function runs(data) {
     runRows(data.runs)
   );
 }
-export function runView(r, stages) {
+export function runView(r, stages, liveConcurrency = false) {
   return (
     head(
       e(r.title),
@@ -126,7 +129,7 @@ export function runView(r, stages) {
     }<p id="run-message" class="error" hidden></p><p id="compiler-activity" class="hint" hidden></p><p id="reference-review-note" class="hint" hidden><a href="/api/runs/${e(r.id)}/reference-review" target="_blank" rel="noopener"></a> · 留给用户核对，不阻塞编译</p>${
       r.legacy
         ? ""
-        : `<div class="run-model-summary"><p id="run-model-live" class="hint"></p><button type="button" id="update-model-config">更新模型配置</button></div>`
+        : `<div class="run-model-summary"><p id="run-model-live" class="hint"></p><div id="run-config-controls" class="row">${liveConcurrency ? `<label class="run-concurrency-label">并行任务数<input id="run-concurrency" type="number" min="1" step="1" required value="${r.pending_llm_concurrency ?? r.concurrency}"></label>` : ""}<button type="button" id="update-model-config">${liveConcurrency ? "更新配置" : "更新模型配置"}</button></div>${liveConcurrency ? '<p class="hint run-config-note">模型读取设置页已保存的配置，并发使用此处数值；仅应用到当前任务，已发出的请求继续执行。</p>' : ""}</div>`
     }</section>` +
     (r.legacy
       ? '<section class="empty">旧流程记录保留，可下载已有产物。新版转换请从书库创建。</section>'

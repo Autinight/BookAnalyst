@@ -78,3 +78,58 @@ def test_legacy_connections_without_names_can_still_be_saved(app):
         for conn in settings["connections"].values():
             conn.pop("name", None)
         assert client.put("/api/settings", json=settings).status_code == 200
+
+
+def test_legacy_provider_limits_are_hidden_and_removed_on_save(app):
+    store = app.state.store
+    legacy = store.get("settings", "main")
+    for conn in legacy["connections"].values():
+        conn["max_in_flight"] = 1
+    store.put("settings", "main", legacy)
+    with client_for(app) as client:
+        response = client.get("/api/settings")
+        assert response.status_code == 200
+        assert all("max_in_flight" not in conn for conn in response.json()["connections"].values())
+        # Reading settings must not write to an existing installation.
+        assert store.get("settings", "main") == legacy
+        response = client.put("/api/settings", json=legacy)
+        assert response.status_code == 200
+        saved = store.get("settings", "main")
+        assert all("max_in_flight" not in conn for conn in saved["connections"].values())
+        assert saved["llm_concurrency"] == legacy["llm_concurrency"]
+        assert saved["stage_models"] == legacy["stage_models"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["codex_chatgpt", "openai_compatible"])
+async def test_provider_does_not_cap_parallel_requests_even_with_legacy_limit(app, monkeypatch, kind):
+    import asyncio
+    from test_request_retry import ready_run, custom_conn, SCHEMA
+
+    store, engine, run = ready_run(app)
+    settings = store.get("settings", "main")
+    cid = "custom_api" if kind == "openai_compatible" else "openai_subscription"
+    if kind == "openai_compatible":
+        settings["connections"][cid] = custom_conn()
+    settings["connections"][cid]["max_in_flight"] = 1
+    store.put("settings", "main", settings)
+    run["config"]["model"]["connection_id"] = cid
+    store.put("run", run["id"], run)
+    entered, release = [], asyncio.Event()
+    all_started = asyncio.Event()
+
+    async def respond(*args):
+        entered.append(True)
+        if len(entered) == 4:
+            all_started.set()
+        await release.wait()
+        return '{"value":1}', None
+
+    monkeypatch.setattr(engine.providers, "_custom" if kind == "openai_compatible" else "_subscription", respond)
+    requests = [asyncio.create_task(engine.providers.generate(run, "model", "convert", f"batch-{i}", SCHEMA)) for i in range(4)]
+    try:
+        await asyncio.wait_for(all_started.wait(), 3)
+        assert len(entered) == 4
+    finally:
+        release.set()
+        await asyncio.gather(*requests)

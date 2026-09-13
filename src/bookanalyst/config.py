@@ -21,7 +21,6 @@ DEFAULT_SETTINGS = {
             "kind": "codex_chatgpt",
             "enabled": True,
             "model_id": "",
-            "max_in_flight": 2,
             "timeout_seconds": 600,
         },
         "custom_api": {
@@ -33,7 +32,6 @@ DEFAULT_SETTINGS = {
             "model_id": "",
             "auth_mode": "bearer",
             "image_support": "unknown",
-            "max_in_flight": 2,
             "timeout_seconds": 600,
         },
     },
@@ -69,6 +67,8 @@ def validate_settings(value):
     for name, conn in value["connections"].items():
         if not re.fullmatch(r"[a-zA-Z0-9_-]{1,80}", name):
             raise WorkflowError("INVALID_CONFIG", "连接名称格式无效", 422)
+        # Accept saved settings and forms from before provider limits were removed.
+        conn.pop("max_in_flight", None)
         kind = conn.get("kind")
         if "name" in conn:
             display_name = conn["name"]
@@ -82,8 +82,6 @@ def validate_settings(value):
         ) | ({"api_key_env"} if kind == "openai_compatible" else set())
         if kind not in ("codex_chatgpt", "openai_compatible") or set(conn) - allowed:
             raise WorkflowError("INVALID_CONFIG", "连接字段无效", 422)
-        if not isinstance(conn.get("max_in_flight"), int) or conn["max_in_flight"] < 1:
-            raise WorkflowError("INVALID_CONFIG", "连接并发必须为正整数", 422)
         if (
             not isinstance(conn.get("timeout_seconds"), int)
             or not 1 <= conn["timeout_seconds"] <= 3600

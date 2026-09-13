@@ -15,7 +15,7 @@ from .models import RunCreate, Operation, StartOperation, RunModelUpdate, STAGES
 from .llm import Providers
 from .engine import Engine
 from .pdf import inspect_pdf
-from .request_history import group_requests
+from .request_history import group_requests, validation_history
 from .reference_review import review_records, review_response
 from .templates import register_template_routes
 from .library import register_library_routes
@@ -117,6 +117,7 @@ def create_app(workspace=None, data_dir=None):
             "books": books(),
             "deleted_books": books(deleted=True),
             "library_management": True,
+            "live_concurrency_updates": True,
             "runs": [store.summary(r) for r in store.list("run")],
             "stages": dict(zip(STAGES, STAGE_NAMES)),
             "model_stages": MODEL_STAGES,
@@ -125,6 +126,7 @@ def create_app(workspace=None, data_dir=None):
     def public_settings():
         value = store.get("settings", "main")
         for name, conn in value["connections"].items():
+            conn.pop("max_in_flight", None)
             if conn["kind"] == "openai_compatible":
                 conn["api_key_configured"] = bool(providers.api_key(name, conn))
                 conn.pop("api_key_env", None)
@@ -289,7 +291,8 @@ def create_app(workspace=None, data_dir=None):
         grouped: bool = False,
     ):
         run = store.get("run", rid)
-        calls = store.calls(rid)
+        tasks = store.tasks(rid)
+        calls = await asyncio.to_thread(validation_history, store.calls(rid), store.directory(rid), tasks)
         totals = Counter(c["metadata"].get("purpose", c["kind"]) for c in calls)
         rows = []
         for c in reversed(calls):
@@ -300,6 +303,9 @@ def create_app(workspace=None, data_dir=None):
                     "task_id": m.get("task_id"),
                     "input_hash": m.get("input_hash"),
                     "attempt": m.get("attempt", 1),
+                    "repair": m.get("repair", False),
+                    "validation_state": m.get("validation_state"),
+                    "validation_error": m.get("validation_error"),
                     "retry_exhausted": m.get("retry_exhausted", False),
                     "state": c["state"],
                     "purpose": m.get("purpose", c["kind"]),
@@ -348,7 +354,7 @@ def create_app(workspace=None, data_dir=None):
                 )
         states = {}
         if grouped:
-            rows, states = group_requests(rows, run, store.tasks(rid))
+            rows, states = group_requests(rows, run, tasks)
         return {
             "total": len(rows), "request_total": len(calls), "purposes": totals,
             "rows": rows[offset : offset + limit], "tokens": actual, "states": states,

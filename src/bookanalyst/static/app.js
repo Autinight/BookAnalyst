@@ -62,7 +62,7 @@ async function navigate(target, id) {
     page = run.pages[0];
     tasks = [];
     pageTaskState = "";
-    $("#main").innerHTML = views.runView(run, data.stages);
+    $("#main").innerHTML = views.runView(run, data.stages, data.live_concurrency_updates);
     updateStatus();
     if (!run.legacy) {
       await updateTasks();
@@ -246,10 +246,14 @@ function updateRunModelLive() {
   const m = run.stage_models?.[stage] || run.model || {};
   const effort = run.stage_models ? m.reasoning_effort : (["convert", "seams"].includes(stage) ? m.reasoning_effort : run.structure_effort);
   el.textContent = run.model_refresh_pending
-    ? "配置待更新：下一次请求前读取设置页已保存的配置；已开始的请求保持原配置。"
+    ? `配置待更新：下一次派发前读取已保存的模型配置${run.pending_llm_concurrency != null ? `，并行任务数调整为 ${run.pending_llm_concurrency}` : ""}；已开始的请求保持原配置。`
     : stage === "style" ? "按全书规则生成公共 TeX（程序执行）"
     : `${data.model_stages?.[stage] || "当前阶段"}：${m.connection_id || "未设置"} / ${m.model_id || "连接默认模型"} · 思考 ${effort || "medium"}`;
   if (button) button.hidden = run.legacy || run.state === "COMPLETED";
+  const controls = $("#run-config-controls"), concurrency = $("#run-concurrency");
+  if (controls) controls.hidden = run.legacy || run.state === "COMPLETED";
+  if (concurrency && !concurrency.dataset.dirty && document.activeElement !== concurrency)
+    concurrency.value = run.pending_llm_concurrency ?? run.concurrency;
 }
 function bookChanged() {
   const form = $("#run-form"),
@@ -289,14 +293,20 @@ document.addEventListener("click", async (event) => {
     if (button.hasAttribute("data-new"))
       return await newRun(button.dataset.new || null);
     if (button.id === "update-model-config") {
+      const concurrency = $("#run-concurrency");
+      if (concurrency && !concurrency.reportValidity()) return;
+      const requested = concurrency ? Number(concurrency.value) : null;
       const id = run.id, version = routeVersion;
       button.disabled = true;
       try {
         const result = await api(`/api/runs/${id}/model`, {
-          method: "POST", body: { revision: run.revision, operation_id: crypto.randomUUID() },
+          method: "POST", body: { revision: run.revision, operation_id: crypto.randomUUID(), ...(requested != null ? { llm_concurrency: requested } : {}) },
         });
-        if (version === routeVersion && run?.id === id) { run = result; updateStatus(); }
-        toast("已标记更新，下一次请求前读取设置页配置");
+        if (version === routeVersion && run?.id === id) {
+          if (concurrency && Number(concurrency.value) === requested) delete concurrency.dataset.dirty;
+          run = result; updateStatus();
+        }
+        toast("已提交配置更新，后续派发使用新配置；已发出的请求继续执行");
       } finally { button.disabled = false; }
       return;
     }
@@ -395,6 +405,7 @@ document.addEventListener("change", async (event) => {
   }
 });
 document.addEventListener("input", event => {
+  if (event.target.id === "run-concurrency") event.target.dataset.dirty = "true";
   if (event.target.hasAttribute("data-connection-field")) {
     const card = event.target.closest("[data-connection-id]"), id = card.dataset.connectionId;
     const field = event.target.dataset.connectionField;

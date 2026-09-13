@@ -277,7 +277,9 @@ td small {
 }
 .badge.RUNNING,
 .badge.WAITING_MERGE,
-.badge.RETRYING {
+.badge.RETRYING,
+.badge.VALIDATING,
+.badge.REPAIRING {
   background: #e5eef9;
   color: #366599;
 }
@@ -287,6 +289,8 @@ td small {
 .badge.PAUSED,
 .badge.FAILED,
 .badge.RETRY_EXHAUSTED,
+.badge.REPAIR_EXHAUSTED,
+.badge.VALIDATION_FAILED,
 .badge.RESULT_UNKNOWN {
   background: #fff0dc;
   color: #a56b20;
@@ -303,7 +307,7 @@ td small {
   color: var(--muted);
   line-height: 1.8;
 }
-.run-model-summary { display: flex; align-items: center; gap: 16px; margin-top: 16px; }
+.run-model-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; margin-top: 16px; }
 .run-model-summary .hint { flex: 1; margin: 0; }
 .stage-model-settings { margin-bottom: 28px; }
 .stage-model-row { display: grid; grid-template-columns: minmax(155px, 1fr) minmax(160px, 1fr) minmax(190px, 1.4fr) minmax(100px, .6fr); gap: 16px; align-items: center; padding: 12px 0; border-bottom: 1px solid var(--line); }
@@ -657,3 +661,9 @@ dialog h2 {
 .template-editor-files .row input { min-width: 120px; flex: 1; }
 .book-open-actions { flex-wrap: wrap; min-width: 0; }
 @media (max-width: 600px) { .template-grid { grid-template-columns: 1fr; } }
+
+.run-concurrency-label { display: flex; align-items: center; gap: 10px; margin: 0; }
+.run-concurrency-label input { width: 90px; margin: 0; }
+#run-config-controls { flex-wrap: wrap; }
+
+.run-model-summary .run-config-note { flex-basis: 100%; }

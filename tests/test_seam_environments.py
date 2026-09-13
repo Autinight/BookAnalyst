@@ -33,11 +33,10 @@ def test_report_is_independent_of_tail_and_locates_nested_openings():
     expected = [{"name": "lemma", "label": "lemma:1", "begin_page": 1, "begin_line": 2},
                 {"name": "enumerate", "label": "", "begin_page": 2, "begin_line": 1}]
     assert environment_report(value["pages"]) == expected
-    with pytest.raises(WorkflowError) as error:
-        validate_conversion(value, [1, 2])
-    assert error.value.code == "ENVIRONMENT_REPORT"
-    value["unclosed_environments"] = [{"name": e["name"], "begin_page": e["begin_page"]} for e in expected]
     validate_conversion(value, [1, 2])
+    value["unclosed_environments"] = [{"name": "proof", "begin_page": 2}]  # Incorrect model bookkeeping.
+    validate_conversion(value, [1, 2])
+    assert environment_report(value["pages"]) == expected
     assert value["tail"] == "closed"  # A complete paragraph does not close its containing environment.
     assert environment_report([{"page": 1, "tex": r"\begin{proof}Text.\label{section:1}"}])[0]["label"] == ""
 
