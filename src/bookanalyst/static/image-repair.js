@@ -5,6 +5,7 @@ const $ = (s) => document.querySelector(s);
 const names = { PENDING: "待检查", RUNNING: "检查中", PAUSED: "等待继续", PASSED: "已确认", FIXED: "已修复", DEFERRED: "待确认", FAILED: "检查失败" };
 let callbacks, generation = 0, timer, books = [], jobs = [], book, inventory, job, selectedImage;
 const encode = encodeURIComponent;
+const imageSize = a => a.width_ratio == null ? "插入宽度：沿用原设置" : `插入宽度：可用正文宽度的 ${Number((a.width_ratio * 100).toFixed(2))}%（等比，高度上限 80%）`;
 
 export function leave() { generation++; clearTimeout(timer); }
 
@@ -26,15 +27,19 @@ function jobOption(r) {
 }
 
 function imageUrl(a, version = "after") {
-  if (job) return `/api/runs/${job.run.id}/images/${encode(a.id)}?version=${version}&state=${encode(a.state || "PENDING")}`;
+  if (job) return `/api/runs/${job.run.id}/images/${encode(a.id)}?version=${version}&v=${encode(version === "before" ? "original" : a.image_version || "original")}`;
   return `/api/books/${book.id}/images/${encode(a.id)}?result_id=${encode(inventory.result_id)}`;
 }
 
+function modelDescription(binding) {
+  return `${binding?.connection_id || "未设置"} / ${binding?.model_id || "连接默认模型"} · 思考 ${binding?.reasoning_effort || "medium"}`;
+}
+
 function cards(images, selecting) {
-  return `<div class="image-grid">${images.map(a => `<article class="image-card" data-image-card="${e(a.id)}">
+  return `<div class="image-grid">${images.map(a => `<article class="image-card" data-image-card="${e(a.id)}" data-image-url="${e(a.available ? imageUrl(a) : "")}">
     <div class="row">${selecting ? `<label class="image-select"><input type="checkbox" name="asset_ids" value="${e(a.id)}" ${a.repairable ? "checked" : "disabled"}>${a.page ? `原书第 ${a.page} 页` : "来源待确认"}</label>` : `<span>原书第 ${a.page} 页</span>`}<span data-image-state>${selecting ? "" : e(names[a.state] || a.state)}</span></div>
     <button type="button" class="image-preview" data-inspect-image="${e(a.id)}" aria-label="查看图片 ${e(a.id)}">${a.available ? `<img src="${imageUrl(a)}" loading="lazy" decoding="async" alt="${e(a.id)} 裁图">` : '<span>裁图文件缺失</span>'}</button>
-    <small class="image-id">${e(a.id)}</small><p data-image-reason>${e(a.reason || "")}</p></article>`).join("")}</div>`;
+    <small class="image-id">${e(a.id)}</small><small data-image-width>${e(imageSize(a))}</small><p data-image-reason>${e(a.reason || "")}</p></article>`).join("")}</div>`;
 }
 
 async function loadBook() {
@@ -44,12 +49,14 @@ async function loadBook() {
   book = books.find(b => b.id === $("#image-book").value);
   if (!book) { $("#image-workspace").innerHTML = '<div class="empty">请选择已保存书籍。</div>'; return; }
   $("#image-workspace").innerHTML = '<p class="hint">正在读取图片来源记录…</p>';
-  const result = await api(`/api/books/${book.id}/images`);
+  const [result, settings] = await Promise.all([api(`/api/books/${book.id}/images`), api("/api/settings")]);
   if (version !== generation) return;
   inventory = result;
   $("#image-workspace").innerHTML = `<form id="image-start-form"><div class="row image-actions"><h2>${e(book.title)}</h2><span class="spacer"></span><button type="button" id="image-select-all">全选可修图片</button><button type="button" id="image-select-none">取消全选</button><button type="submit" class="primary" ${result.images.some(a => a.repairable) ? "" : "disabled"}>检查并修复所选图片</button></div>
-    <p class="hint">共 ${result.images.length} 张登记图片，<span id="image-selected-count"></span>。使用“分批视觉转换”的模型配置。逐图检查，修复后复核，再集中编译；不能确认的保留原图。</p>
-    <p class="hint">旧版统一放大的图片尺寸会一并校正；不调整布局，也不扫描未登记的漏图。</p>
+    <div class="row image-actions"><label>本次修图并发<input name="image_concurrency" type="number" min="1" step="1" required value="${settings.image_repair_concurrency}"></label><button type="button" id="image-model-settings">设置修图模型</button></div>
+    <p class="hint">图片修复模型：${e(modelDescription(settings.stage_models.image_repair))}。检查与裁剪后复核均使用此模型。</p>
+    <p class="hint">共 ${result.images.length} 张登记图片，<span id="image-selected-count"></span>。模型和并发独立于正文转换。逐图检查，修复后复核，再集中编译；不能确认的保留原图。</p>
+    <p class="hint">模型可保留裁图并调整插入宽度，也可从原页重新裁剪。保持长宽比；不调整整页布局，也不扫描未登记的漏图。</p>
     ${result.images.length ? cards(result.images, true) : '<div class="empty">此结果没有可定位的图片标记。</div>'}</form>`;
   updateSelection();
 }
@@ -73,12 +80,17 @@ async function loadJob(id) {
   $("#image-book").value = job.run.book_id;
   if (!Array.from($("#image-job").options).some(o => o.value === id)) $("#image-job").insertAdjacentHTML("beforeend", jobOption(job.run));
   $("#image-job").value = id;
-  $("#image-workspace").innerHTML = `<section class="run-status"><div class="row image-actions"><h2>${e(job.run.title)}</h2><span id="image-run-badge"></span><span class="spacer"></span><button id="image-resume" class="primary">继续修图</button><button id="image-retry" title="只在上次请求结果未确认时使用；上游可能重复计费">重试未返回请求</button><button id="image-pause">暂停</button><a id="image-pdf" class="button" href="/api/runs/${id}/pdf" target="_blank" rel="noopener">修图版 PDF ↗</a><a class="button" href="/api/runs/${id}/export">下载工程</a></div><p id="image-progress" class="hint"></p><p id="image-run-message" class="error" role="alert"></p><p class="hint">原结果保留。单张待确认不阻塞其他图片；已完成只表示本轮处理与编译完成，不表示所有图片都已确认。</p></section>${cards(job.images, false)}`;
+  $("#image-workspace").innerHTML = `<section class="run-status"><div class="row image-actions"><h2>${e(job.run.title)}</h2><span id="image-run-badge"></span><span class="spacer"></span><button id="image-resume" class="primary">继续修图</button><button id="image-retry" title="只在上次请求结果未确认时使用；上游可能重复计费">重试未返回请求</button><button id="image-pause">暂停</button><a id="image-pdf" class="button" href="/api/runs/${id}/pdf" target="_blank" rel="noopener">修图版 PDF ↗</a><a class="button" href="/api/runs/${id}/export">下载工程</a></div>
+    <p id="image-model-summary" class="hint"></p><div id="image-config-controls" class="row image-actions"><label>修图并发<input id="image-concurrency" type="number" min="1" step="1" required value="${job.run.pending_llm_concurrency ?? job.run.concurrency}"></label><button type="button" id="image-model-settings">设置修图模型</button><button type="button" id="image-update-config">更新模型与并发</button><small>后续请求生效，已发出的请求继续执行，已完成的图片不重查。</small></div>
+    <p id="image-progress" class="hint"></p><p id="image-run-message" class="error" role="alert"></p><p class="hint">原结果保留。单张待确认不阻塞其他图片；已完成只表示本轮处理与编译完成，不表示所有图片都已确认。</p></section>${cards(job.images, false)}`;
   updateJob(); schedule();
 }
 
 function updateJob() {
   const r = job.run;
+  const binding = r.stage_models?.image_repair || r.stage_models?.convert || r.model;
+  $("#image-model-summary").textContent = `本任务修图模型：${modelDescription(binding)} · 并发 ${r.concurrency}${r.model_refresh_pending ? "；模型/并发待更新，下次派发前生效" : ""}`;
+  $("#image-config-controls").hidden = r.state === "COMPLETED";
   const option = Array.from($("#image-job").options).find(o => o.value === r.id);
   if (option) option.textContent = `${r.title} · ${stateNames[r.state] || r.state} · ${new Date(r.created_at * 1000).toLocaleString()}`;
   $("#image-run-badge").innerHTML = badge(r.state);
@@ -90,14 +102,20 @@ function updateJob() {
   $("#image-pause").hidden = r.state !== "RUNNING";
   $("#image-pdf").hidden = r.state !== "COMPLETED";
   $("#image-run-message").textContent = (r.error || r.retention_error)?.message || "";
+  const byId = new Map(job.images.map(a => [a.id, a]));
   for (const card of document.querySelectorAll("[data-image-card]")) {
-    const a = job.images.find(row => row.id === card.dataset.imageCard);
+    const a = byId.get(card.dataset.imageCard);
     card.querySelector("[data-image-state]").textContent = names[a.state] || a.state;
+    card.querySelector("[data-image-width]").textContent = imageSize(a);
     card.querySelector("[data-image-reason]").textContent = a.reason || "";
-    if (card.dataset.state !== a.state) {
-      card.dataset.state = a.state;
-      if (a.available) card.querySelector(".image-preview").innerHTML = `<img src="${imageUrl(a)}" loading="lazy" decoding="async" alt="${e(a.id)} 裁图">`;
+    const url = a.available ? imageUrl(a) : "";
+    if (card.dataset.imageUrl !== url) {
+      card.dataset.imageUrl = url;
+      card.querySelector(".image-preview").innerHTML = url ? `<img src="${url}" loading="lazy" decoding="async" alt="${e(a.id)} 裁图">` : '<span>裁图文件缺失</span>';
       if (selectedImage === a.id) inspect(a.id);
+    } else if (selectedImage === a.id) {
+      $("[data-image-detail-reason]").textContent = a.reason || "";
+      $("[data-image-detail-width]").textContent = imageSize(a);
     }
   }
 }
@@ -122,7 +140,7 @@ function inspect(id) {
   if (!a) return;
   selectedImage = id;
   const detail = $("#image-detail"); detail.hidden = false;
-  detail.innerHTML = `<h2>图片对照 · ${e(id)}</h2><p>${e(a.reason || "")}</p><div class="image-comparison">
+  detail.innerHTML = `<h2>图片对照 · ${e(id)}</h2><p data-image-detail-reason>${e(a.reason || "")}</p><p data-image-detail-width>${e(imageSize(a))}</p><p class="hint">这里展示裁图内容；实际插入大小请查看修图版 PDF。</p><div class="image-comparison">
     ${a.page ? `<figure><figcaption>原书第 ${a.page} 页</figcaption><a href="/api/books/${book?.id || job.run.book_id}/image?page=${a.page}&dpi=150" target="_blank" rel="noopener"><img src="/api/books/${book?.id || job.run.book_id}/image?page=${a.page}&dpi=110" alt="原书第 ${a.page} 页" decoding="async"></a></figure>` : ""}
     ${job && a.before_available ? `<figure><figcaption>修复前</figcaption><img src="${imageUrl(a, "before")}" alt="修复前裁图"></figure>` : ""}
     <figure><figcaption>${job ? "当前裁图" : "已保存裁图"}</figcaption>${a.available ? `<img src="${imageUrl(a)}" alt="当前裁图">` : "图片缺失"}</figure></div><details><summary>定位信息与附近 TeX</summary><p>裁剪框：${e(JSON.stringify(a.bbox))}</p><pre>${e(a.context || "")}</pre></details>`;
@@ -144,14 +162,18 @@ export function init(handlers) {
     try {
       if (button.dataset.inspectImage) { inspect(button.dataset.inspectImage); $("#image-detail").scrollIntoView({ behavior: "smooth", block: "start" }); }
       if (button.id === "image-current") await loadBook();
+      if (button.id === "image-model-settings") return await callbacks.navigate("settings");
       if (["image-select-all", "image-select-none"].includes(button.id)) {
         document.querySelectorAll('[name="asset_ids"]:not(:disabled)').forEach(input => input.checked = button.id === "image-select-all"); updateSelection();
       }
-      if (["image-pause", "image-resume", "image-retry"].includes(button.id)) {
+      if (["image-pause", "image-resume", "image-retry", "image-update-config"].includes(button.id)) {
+        const updating = button.id === "image-update-config";
+        if (updating && !$("#image-concurrency").reportValidity()) return;
         button.disabled = true;
         const id = job.run.id, version = generation;
-        await api(`/api/runs/${id}/${button.id === "image-pause" ? "pause" : "start"}`, { method: "POST", body: {
-          revision: job.run.revision, operation_id: crypto.randomUUID(), ...(button.id === "image-retry" ? { retry_unknown: true } : {}) } });
+        await api(`/api/runs/${id}/${updating ? "model" : button.id === "image-pause" ? "pause" : "start"}`, { method: "POST", body: {
+          revision: job.run.revision, operation_id: crypto.randomUUID(), ...(button.id === "image-retry" ? { retry_unknown: true } : {}),
+          ...(updating ? { llm_concurrency: Number($("#image-concurrency").value) } : {}) } });
         if (version !== generation) return;
         job = await api(`/api/runs/${id}/images`);
         if (version === generation) { updateJob(); schedule(); }
@@ -166,14 +188,16 @@ export function init(handlers) {
     const asset_ids = Array.from(form.querySelectorAll('[name="asset_ids"]:checked')).map(el => el.value);
     if (!asset_ids.length) return;
     button.disabled = true; $("#image-error").textContent = "";
+    const label = button.textContent;
+    button.textContent = "正在创建修图任务…";
     // Retain the operation ID on network errors so a retry cannot duplicate the job.
-    const request = JSON.stringify({ result_id: inventory.result_id, asset_ids });
+    const request = JSON.stringify({ result_id: inventory.result_id, asset_ids, llm_concurrency: Number(form.elements.image_concurrency.value) });
     if (form.dataset.request !== request) { form.dataset.request = request; form.dataset.operation = crypto.randomUUID(); }
     try {
       const result = await api(`/api/books/${book.id}/repair-images`, { method: "POST", body: { ...JSON.parse(request), operation_id: form.dataset.operation } });
       if (version === generation) await loadJob(result.id);
       callbacks.toast("独立修图任务已创建，原书结果保留");
     } catch (error) { if (version === generation) $("#image-error").textContent = error.message; }
-    finally { button.disabled = false; }
+    finally { button.disabled = false; button.textContent = label; }
   });
 }

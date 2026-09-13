@@ -16,15 +16,16 @@ MODEL_STAGES = {
     "reference_repair": "引用局部修复",
     "finish": "最终编译与修复",
     "template_apply": "模板外观迁移",
+    "image_repair": "图片修复",
 }
-PURPOSE_STAGE = {"compile_repair": "finish", "counter_repair": "setup", "image_repair": "convert"}
+PURPOSE_STAGE = {"compile_repair": "finish", "counter_repair": "setup"}
 
 
 def legacy_models(config):
     binding = config.get("model") or Binding().model_dump()
     return {
         stage: dict(binding, reasoning_effort=(binding.get("reasoning_effort", "medium")
-                    if stage in ("convert", "seams") else config.get("structure_effort", "xhigh")))
+                    if stage in ("convert", "seams", "image_repair") else config.get("structure_effort", "xhigh")))
         for stage in MODEL_STAGES
     }
 
@@ -32,6 +33,9 @@ def legacy_models(config):
 def settings_models(settings, legacy=None):
     if settings.get("stage_models"):
         models = copy.deepcopy(settings["stage_models"])
+        # Old installations get an editable initial copy, not a live alias.
+        if "image_repair" not in models and "convert" in models:
+            models["image_repair"] = copy.deepcopy(models["convert"])
         for binding in models.values():
             if not binding["model_id"]:
                 binding["model_id"] = settings["connections"].get(binding["connection_id"], {}).get("model_id", "")
@@ -46,6 +50,9 @@ def settings_models(settings, legacy=None):
 def stage_binding(config, purpose, *, repair=False):
     stage = PURPOSE_STAGE.get(purpose, purpose)
     if config.get("stage_models"):
+        # An existing run keeps its frozen, pre-upgrade model until refreshed.
+        if stage == "image_repair" and stage not in config["stage_models"]:
+            stage = "convert"
         return copy.deepcopy(config["stage_models"][stage])
     # Old runs keep their original semantics until the user explicitly refreshes.
     if repair and stage in ("convert", "seams"):
@@ -59,11 +66,14 @@ def refresh_pending(store, rid):
         return run
     settings = store.get("settings", "main")
     bindings = settings_models(settings)
+    default_limit = settings.get("llm_concurrency", run["config"]["llm_concurrency"])
+    if run.get("kind") == "image_repair":
+        default_limit = settings.get("image_repair_concurrency", default_limit)
 
     def apply(current):
         if current.get("model_refresh_pending"):
             current["config"].update(stage_models=bindings,
-                                     llm_concurrency=current.pop("pending_llm_concurrency", settings.get("llm_concurrency", current["config"]["llm_concurrency"])))
+                                     llm_concurrency=current.pop("pending_llm_concurrency", default_limit))
             current["model_refresh_pending"] = False
             current["model_settings_updated_at"] = time.time()
     return store.change(rid, apply)
@@ -71,12 +81,12 @@ def refresh_pending(store, rid):
 
 async def request_run(providers, rid, purpose, *, repair=False, require_image=False):
     """Freeze one request's binding; later updates cannot mutate an active call."""
-    run = refresh_pending(providers.store, rid)
+    run = await asyncio.to_thread(refresh_pending, providers.store, rid)
     binding = stage_binding(run["config"], purpose, repair=repair)
     if run["config"].get("stage_models"):
         requested = copy.deepcopy(binding)
         # Resolve each distinct binding/capability once, not once per book page.
-        settings = providers.store.get("settings", "main")
+        settings = await asyncio.to_thread(providers.store.get, "settings", "main")
         key = digest({"binding": binding, "connection": settings["connections"].get(binding["connection_id"]),
                       "images": require_image})
         if not hasattr(providers, "stage_binding_cache"):
@@ -92,6 +102,6 @@ async def request_run(providers, rid, purpose, *, repair=False, require_image=Fa
                 if (current["revision"] == run["revision"] and not current.get("model_refresh_pending")
                         and current["config"].get("stage_models", {}).get(stage) == requested):
                     current["config"]["stage_models"][stage] = copy.deepcopy(binding)
-            providers.store.change(rid, freeze_default)
+            await asyncio.to_thread(providers.store.change, rid, freeze_default)
     run["config"]["model"] = binding
     return run

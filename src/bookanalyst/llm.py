@@ -13,7 +13,7 @@ from pathlib import Path
 import httpx
 from jsonschema import validate, ValidationError
 from .config import secret
-from .store import WorkflowError, atomic_json, digest, encode
+from .store import WorkflowError, atomic_json, digest, encode, write_async
 
 REQUEST_ATTEMPTS = 5
 REQUEST_RETRY_DELAY = 2.0
@@ -82,6 +82,7 @@ class Providers:
         self.agent_sdk = None
         self.runtime = None
         self.sdk_lock = asyncio.Lock()
+        self.http_clients = {}
 
     async def codex(self):
         async with self.sdk_lock:
@@ -155,6 +156,28 @@ class Providers:
 
     async def close(self):
         await asyncio.gather(*(sdk.close() for sdk in (self.sdk, self.agent_sdk) if sdk))
+        clients = await asyncio.gather(*self.http_clients.values(), return_exceptions=True)
+        self.http_clients.clear()
+        await asyncio.gather(*(client.aclose() for client in clients if isinstance(client, httpx.AsyncClient)))
+
+    async def custom_client(self, connection_id, conn):
+        # One pool per connection/address, with request-local credentials/timeouts.
+        # Initialization loads certificates synchronously on Windows: keep even
+        # the first initialization off the web event loop. Shield it so cancelling
+        # one request cannot cancel the client shared by other active requests.
+        key = (connection_id, conn["base_url"], self.transport)
+        if key not in self.http_clients:
+            self.http_clients[key] = asyncio.create_task(asyncio.to_thread(
+                httpx.AsyncClient, timeout=None, transport=self.transport,
+                limits=httpx.Limits(max_connections=None),
+            ))
+        pending = self.http_clients[key]
+        try:
+            return await asyncio.shield(pending)
+        except Exception:
+            if self.http_clients.get(key) is pending:
+                del self.http_clients[key]
+            raise
 
     def connection(self, connection_id):
         settings = self.store.get("settings", "main")
@@ -410,78 +433,75 @@ class Providers:
                 raise WorkflowError("AUTH_REQUIRED", "请配置自定义 API 凭据", 422)
         return dict(binding, model_id=model_id), conn
 
+    def _request_metadata(self, run, role, purpose, prompt, schema, images):
+        binding = run["config"][role]
+        return dict(
+            role=role, model_id=binding["model_id"], prompt_version="0.7.0",
+            input_hash=digest({"prompt": prompt, "schema": schema,
+                               "images": [digest(p.read_bytes()) for p in images]}),
+            purpose=purpose, task_id=run.get("request_task_id"),
+            phase=run.get("request_phase"), repair=run.get("request_is_repair", False),
+            connection_id=binding["connection_id"],
+            reasoning_effort=binding.get("reasoning_effort", "medium"),
+        )
+
+    def _saved_response(self, rid, metadata, schema):
+        # A completed upstream response can precede the engine checkpoint.
+        # Reuse the durable receipt after interruption instead of paying twice.
+        for previous in reversed(self.store.calls(rid)):
+            meta = previous["metadata"]
+            if previous["state"] == "COMPLETED" and all(
+                meta.get(k) == metadata[k] for k in (
+                    "input_hash", "model_id", "connection_id", "reasoning_effort", "prompt_version"
+                )
+            ):
+                saved = self.store.root / "runs" / rid / "requests" / previous["id"] / "response.json"
+                if saved.exists():
+                    return True, parse_json(json.loads(saved.read_text(encoding="utf-8"))["text"], schema)
+        return False, None
+
+    async def _reserve_call(self, run, metadata):
+        pending = asyncio.create_task(asyncio.to_thread(
+            self.store.reserve, run["id"], run["revision"], "llm", 1, metadata
+        ))
+        try:
+            return await asyncio.shield(pending)
+        except asyncio.CancelledError:
+            call_id = await pending
+            await write_async(self.store.finish_call, call_id, "FAILED", error_code="PAUSED")
+            raise
+
     async def generate(
         self, run, role, purpose, prompt, schema, images=(), semaphore=None
     ):
         binding = run["config"][role]
-        conn = self.connection(binding["connection_id"])
+        conn = await asyncio.to_thread(self.connection, binding["connection_id"])
         if not binding["model_id"]:
             raise WorkflowError("MODEL_UNAVAILABLE", "运行模型尚未冻结")
         async with semaphore or asyncio.Semaphore(1):
-            if self.store.get("run", run["id"]).get("pause_requested"):
+            if (await asyncio.to_thread(self.store.get, "run", run["id"])).get("pause_requested"):
                 raise WorkflowError("PAUSED", "已停止派发并保存完成结果")
-            metadata = dict(
-                role=role,
-                model_id=binding["model_id"],
-                prompt_version="0.7.0",
-                input_hash=digest(
-                    {
-                        "prompt": prompt,
-                        "schema": schema,
-                        "images": [digest(p.read_bytes()) for p in images],
-                    }
-                ),
-                purpose=purpose,
-                task_id=run.get("request_task_id"),
-                phase=run.get("request_phase"),
-                repair=run.get("request_is_repair", False),
-                connection_id=binding["connection_id"],
-                reasoning_effort=binding.get("reasoning_effort", "medium"),
-            )
-            # A completed upstream response can exist before the engine checkpoint.
-            # Reuse that receipt after an interrupted process instead of paying twice.
-            for previous in reversed(self.store.calls(run["id"])):
-                meta = previous["metadata"]
-                if previous["state"] == "COMPLETED" and all(
-                    meta.get(k) == metadata[k]
-                    for k in (
-                        "input_hash",
-                        "model_id",
-                        "connection_id",
-                        "reasoning_effort",
-                        "prompt_version",
-                    )
-                ):
-                    saved = (
-                        self.store.root
-                        / "runs"
-                        / run["id"]
-                        / "requests"
-                        / previous["id"]
-                        / "response.json"
-                    )
-                    if saved.exists():
-                        return parse_json(
-                            json.loads(saved.read_text(encoding="utf-8"))["text"],
-                            schema,
-                        )
+            metadata = await asyncio.to_thread(self._request_metadata, run, role, purpose, prompt, schema, images)
+            found, saved = await asyncio.to_thread(self._saved_response, run["id"], metadata, schema)
+            if found:
+                return saved
             delay = REQUEST_RETRY_DELAY
             last_error = None
             for attempt in range(1, REQUEST_ATTEMPTS + 1):
-                if self.store.get("run", run["id"]).get("pause_requested"):
+                if (await asyncio.to_thread(self.store.get, "run", run["id"])).get("pause_requested"):
                     raise WorkflowError("PAUSED", "已停止派发并保存完成结果")
-                call_id = self.store.reserve(
-                    run["id"], run["revision"], "llm", 1, metadata | {"attempt": attempt}
-                )
+                call_id = await self._reserve_call(run, metadata | {"attempt": attempt})
                 directory = (
                     self.store.root / "runs" / run["id"] / "requests" / call_id
                 )
-                atomic_json(
-                    directory / "request.json",
-                    metadata | {"prompt": prompt, "schema": schema, "attempt": attempt},
-                )
                 usage = None
                 try:
+                    await write_async(
+                        atomic_json, directory / "request.json",
+                        metadata | {"prompt": prompt, "schema": schema, "attempt": attempt},
+                    )
+                    if (await asyncio.to_thread(self.store.get, "run", run["id"])).get("pause_requested"):
+                        raise WorkflowError("PAUSED", "已停止派发并保存完成结果")
                     async with asyncio.timeout(conn["timeout_seconds"]):
                         if conn["kind"] == "codex_chatgpt":
                             text, usage = await self._subscription(
@@ -495,12 +515,12 @@ class Providers:
                             text, usage = await self._custom(
                                 conn, binding, prompt, schema, images
                             )
-                    atomic_json(
-                        directory / "response.json",
+                    await write_async(
+                        atomic_json, directory / "response.json",
                         {"text": text, "usage": usage},
                     )
-                    result = parse_json(text, schema)
-                    self.store.finish_call(
+                    result = await asyncio.to_thread(parse_json, text, schema)
+                    await write_async(self.store.finish_call,
                         call_id,
                         "COMPLETED",
                         usage=usage,
@@ -509,16 +529,16 @@ class Providers:
                     )
                     return result
                 except asyncio.CancelledError:
-                    self.store.finish_call(call_id, "RESULT_UNKNOWN")
+                    await write_async(self.store.finish_call, call_id, "RESULT_UNKNOWN")
                     raise
                 except WorkflowError as exc:
                     if exc.code == "PAUSED":
-                        self.store.finish_call(
+                        await write_async(self.store.finish_call,
                             call_id, "FAILED", error_code=exc.code, usage=usage
                         )
                         raise
                     if exc.code == "SCHEMA_ERROR":
-                        self.store.finish_call(
+                        await write_async(self.store.finish_call,
                             call_id, "FAILED", error_code=exc.code, usage=usage
                         )
                         raise
@@ -528,7 +548,7 @@ class Providers:
                         if exc.code == "RESULT_UNKNOWN"
                         else "FAILED"
                     )
-                    self.store.finish_call(
+                    await write_async(self.store.finish_call,
                         call_id, state, error_code=exc.code,
                         error_message=exc.message, usage=usage
                     )
@@ -540,7 +560,7 @@ class Providers:
                         retryable=retryable,
                     )
                 except (TimeoutError, httpx.TimeoutException, httpx.TransportError):
-                    self.store.finish_call(call_id, "RESULT_UNKNOWN")
+                    await write_async(self.store.finish_call, call_id, "RESULT_UNKNOWN")
                     last_error = WorkflowError(
                         "RESULT_UNKNOWN",
                         "模型请求超时或中断，未收到完整结果。可点击“重试未返回请求”继续；已有成果保留，上游可能重复计费。",
@@ -548,7 +568,7 @@ class Providers:
                         retryable=True,
                     )
                 except Exception:
-                    self.store.finish_call(
+                    await write_async(self.store.finish_call,
                         call_id, "FAILED", error_code="REQUEST_FAILED"
                     )
                     last_error = WorkflowError(
@@ -565,7 +585,7 @@ class Providers:
                 await asyncio.sleep(delay)
                 delay = min(REQUEST_RETRY_DELAY_MAX, delay * 2)
             if last_error and last_error.retryable:
-                self._mark_retry_exhausted(run["id"], metadata["input_hash"])
+                await asyncio.to_thread(self._mark_retry_exhausted, run["id"], metadata["input_hash"])
             raise last_error
 
     async def reconcile(self, run):
@@ -794,7 +814,7 @@ class Providers:
             "item_types": [i.get("type") for i in items],
         }
 
-    async def _custom(self, conn, binding, prompt, schema, images):
+    def _custom_payload(self, conn, binding, prompt, schema, images):
         headers = self._custom_headers(binding.get("connection_id"), conn)
         image_urls = [
             "data:image/png;base64," + base64.b64encode(p.read_bytes()).decode()
@@ -834,16 +854,21 @@ class Providers:
             }
             payload["reasoning"] = {"effort": binding.get("reasoning_effort", "medium")}
             endpoint = "/responses"
-        async with httpx.AsyncClient(
-            timeout=conn["timeout_seconds"], transport=self.transport
-        ) as client:
-            response = await client.post(
-                conn["base_url"].rstrip("/") + endpoint, headers=headers, json=payload
-            )
+        # Serialize the image-heavy body here, not inside client.post on the loop.
+        content = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
+        return endpoint, headers | {"Content-Type": "application/json"}, content
+
+    async def _custom(self, conn, binding, prompt, schema, images):
+        client = await self.custom_client(binding.get("connection_id"), conn)
+        endpoint, headers, content = await asyncio.to_thread(self._custom_payload, conn, binding, prompt, schema, images)
+        response = await client.post(
+            conn["base_url"].rstrip("/") + endpoint, headers=headers, content=content,
+            timeout=conn["timeout_seconds"],
+        )
         error = self._http_error(response)
         if error:
             raise error
-        data = response.json()
+        data = await asyncio.to_thread(response.json)
         if conn["protocol"] == "chat_completions":
             choice = data["choices"][0]
             if choice.get("finish_reason") != "stop":

@@ -1,5 +1,6 @@
 """Task slots that recheck a run's concurrency without cancelling active work."""
 import asyncio
+import inspect
 
 
 class TaskSlots:
@@ -9,8 +10,13 @@ class TaskSlots:
         self.changed = asyncio.Event()
 
     async def __aenter__(self):
-        while self.active >= self.get_limit():
+        while True:
             self.changed.clear()
+            limit = self.get_limit()
+            if inspect.isawaitable(limit):
+                limit = await limit
+            if self.active < limit:
+                break
             await self.changed.wait()
         self.active += 1
 

@@ -90,6 +90,7 @@ def image_inventory(store, book, project, rid):
             position = tex.find(path.name)
         rows.append({"id": identifier, "page": page, "bbox": box,
                      "file": f"assets/{identifier}.png", "dpi": a.get("dpi", 150),
+                     "width_ratio": a.get("width_ratio"),
                      "available": path.is_file(), "repairable": known,
                      "reason": "" if known else "缺少原页码或裁剪记录，不能自动猜测来源",
                      "context": tex[max(0, position - 300):position + 700] if position >= 0 else ""})

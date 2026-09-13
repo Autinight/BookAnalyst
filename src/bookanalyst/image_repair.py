@@ -2,23 +2,25 @@
 import asyncio
 import copy
 import json
+import re
 import shutil
 import time
 import uuid
+from decimal import Decimal
 from typing import Literal
 
 from fastapi import Query
 from fastapi.responses import FileResponse
 from PIL import Image
-from pydantic import Field, ValidationError
+from pydantic import ConfigDict, Field, ValidationError
 
-from .documents import Result
+from .documents import Result, _tool_action_schema
 from .figure_assets import MANIFEST, asset_path, image_inventory, valid_box
 from .library_outputs import PROJECT_SUFFIXES, retained_directory
 from .model_config import settings_models
 from .models import STAGES, StrictModel, WORKFLOW_VERSION
 from .pdf import inspect_pdf
-from .store import WorkflowError, atomic_json, atomic_text, digest
+from .store import WorkflowError, atomic_json, atomic_text, digest, write_async
 from .tex import compile_tex
 
 
@@ -26,11 +28,16 @@ class ImageRepairCreate(StrictModel):
     result_id: str
     asset_ids: list[str] = Field(min_length=1)
     operation_id: str = Field(min_length=8, max_length=100)
+    llm_concurrency: int | None = Field(default=None, ge=1, strict=True)
 
 
 class ImageDecision(Result):
+    model_config = ConfigDict(extra="forbid", json_schema_extra=_tool_action_schema)
     action: Literal["keep", "recrop", "uncertain"]
     bbox: list[float]
+    width_ratio: float | None = Field(
+        default=None, gt=0, le=1, strict=True, allow_inf_nan=False,
+        description="Insertion width as a fraction of the available text width, (0,1]; null leaves sizing unchanged. Not pixels or crop coordinates.")
     reason: str
 
 
@@ -45,6 +52,16 @@ recrop with [left,top,right,bottom] coordinates normalized to the WHOLE original
 (origin at top left) if a clear correction is possible; uncertain if the intended image
 cannot be identified or fixing it requires editing text, captions, or figure structure.
 Give a brief concrete reason in Chinese. For keep/uncertain return bbox=[].
+Independently set width_ratio when the illustration needs a different insertion size:
+0.5 means half the available text width; valid range is (0,1], null keeps existing sizing.
+Use keep with width_ratio if the crop is complete but its insertion size needs changing;
+use recrop with bbox and optional width_ratio when content is clipped or extraneous.
+Choose a suitable readable size from the illustration, original page and nearby TeX,
+not an exact reproduction of the original layout. Do not enlarge every image to full width.
+The program preserves aspect ratio and caps height at 80% of text height; it does not
+resample the PNG to change insertion size. The standard BAFigure uses native size with
+shrink-to-fit limits. Existing explicit insertion options appear in nearby TeX.
+For uncertain return width_ratio=null; no changes will be applied.
 Do not claim a proposed crop has been verified until you have seen the actual new image.
 """
 
@@ -63,7 +80,7 @@ def repair_run(store, rid):
 def create_image_run(engine, bid, command):
     store = engine.store
     rid = uuid.uuid5(uuid.NAMESPACE_URL, "bookanalyst-images:" + bid + ":" + command.operation_id).hex
-    signature = digest(command.model_dump())
+    signature = digest(command.model_dump(exclude_none=True))
     with store.output_lock:
         try:
             existing = store.get("run", rid)
@@ -88,7 +105,8 @@ def create_image_run(engine, bid, command):
         source_run = store.get("run", result["run_id"])
         config = copy.deepcopy(source_run["config"])
         settings = store.get("settings", "main")
-        config.update(stage_models=settings_models(settings), llm_concurrency=settings.get("llm_concurrency", 2))
+        concurrency = command.llm_concurrency or settings.get("image_repair_concurrency", settings.get("llm_concurrency", 2))
+        config.update(stage_models=settings_models(settings), llm_concurrency=concurrency)
         now = time.time()
         run = dict(id=rid, revision=1, created_at=now, updated_at=now, workflow_version=WORKFLOW_VERSION,
                    kind="image_repair", state="PENDING", source=copy.deepcopy(book), config=config,
@@ -150,6 +168,39 @@ def correct_legacy_size(project, assets):
                     im.save(path, dpi=(a.get("dpi", 150),) * 2)
 
 
+def image_width_edits(project, identifier, ratio):
+    """Change only this asset's literal insertion commands, including repeat repairs."""
+    asset_path(project, identifier)
+    name = re.escape(identifier)
+    pattern = re.compile(r"\\BAFigure\{" + name + r"\}|"
+                         r"\\includegraphics(?P<star>\*)?(?:\[(?P<options>[^\[\]]*)\])?"
+                         r"\{assets/" + name + r"(?:\.png)?\}")
+    edits = {}
+
+    def replace(match):
+        # Keep non-size options (e.g. angle/trim); remove old competing size limits.
+        options = [option.strip() for option in (match.group("options") or "").split(",")
+                   if option.strip() and option.split("=", 1)[0].strip()
+                   not in {"width", "height", "totalheight", "scale", "keepaspectratio"}]
+        options += [f"width={Decimal(str(ratio)):f}\\linewidth", r"height=.8\textheight", "keepaspectratio"]
+        return ("\\includegraphics" + (match.group("star") or "") + "[" + ",".join(options)
+                + "]{assets/" + identifier + ".png}")
+
+    for path in project.rglob("*.tex"):
+        before = path.read_text(encoding="utf-8")
+        # A commented-out marker is not an actual insertion point.
+        visible = re.sub(r"(?m)(?<!\\)(?:\\\\)*%[^\r\n]*", lambda m: " " * len(m[0]), before)
+        matches = list(pattern.finditer(visible))
+        if matches:
+            after = before
+            for match in reversed(matches):
+                after = after[:match.start()] + replace(match) + after[match.end():]
+            edits[path] = after
+    if not edits:
+        raise WorkflowError("IMAGE_INSERTION", "未找到可修改的图片插入命令，保留原图和尺寸", 422)
+    return edits
+
+
 async def repair_images(engine, run):
     store, rid = engine.store, run["id"]
     base = store.directory(rid)
@@ -157,6 +208,7 @@ async def repair_images(engine, run):
     selection = read_json(base / "image-selection.json")
     manifest = read_json(project / MANIFEST)
     by_id = {a["id"]: a for a in manifest["assets"]}
+    manifest_lock = asyncio.Lock()
     interrupted = []
 
     async def worker(a):
@@ -172,21 +224,45 @@ async def repair_images(engine, run):
             key = "image-" + identifier
             current = asset_path(project, identifier)
             row = {"id": identifier, "page": a["page"], "before_bbox": a["bbox"],
-                   "bbox": a["bbox"], "state": "RUNNING", "reason": ""}
+                   "bbox": a["bbox"], "before_width_ratio": a.get("width_ratio"),
+                   "width_ratio": a.get("width_ratio"), "state": "RUNNING", "reason": ""}
+
+            async def apply_decision(candidate=None):
+                async with manifest_lock:
+                    edits = await asyncio.to_thread(image_width_edits, project, identifier, decision.width_ratio) \
+                        if decision.width_ratio is not None else {}
+                    # Resolve the insertion point before applying any part of this decision.
+                    def save():
+                        if candidate is not None:
+                            current.parent.mkdir(parents=True, exist_ok=True)
+                            shutil.copy2(candidate, current)
+                            by_id[identifier].update(bbox=decision.bbox, dpi=150)
+                        for path, content in edits.items():
+                            atomic_text(path, content)
+                        if decision.width_ratio is not None:
+                            by_id[identifier]["width_ratio"] = decision.width_ratio
+                        atomic_json(project / MANIFEST, manifest)
+                    await write_async(save)
+                row["width_ratio"] = by_id[identifier].get("width_ratio")
+
             try:
-                engine.check_pause(run)
+                await asyncio.to_thread(engine.check_pause, run)
                 payload = {"instruction": INSTRUCTION, "phase": "check", "asset": a,
                            "source_result_id": run["image_repair"]["source_result_id"],
                            "crop_present": current.is_file()}
                 decision = ImageDecision.model_validate(await engine.ask(
                     run, key, "image_repair", payload, ImageDecision, [a["page"]],
                     extra_images=[current] if current.is_file() else []))
-                engine.check_pause(run)
+                await asyncio.to_thread(engine.check_pause, run)
                 if not decision.reason.strip():
                     raise WorkflowError("IMAGE_REASON", "模型未说明检查依据")
                 row["reason"] = decision.reason
                 if decision.action == "keep" and current.is_file():
-                    row["state"] = "PASSED"
+                    if decision.width_ratio is not None:
+                        await apply_decision()
+                        row["state"] = "FIXED"
+                    else:
+                        row["state"] = "PASSED"
                 elif decision.action == "recrop":
                     candidate = asset_path(base / "image-candidates", identifier)
                     source = await engine.image(run["source"], a["page"])
@@ -195,16 +271,15 @@ async def repair_images(engine, run):
                         run, key, "image_repair",
                         payload | {"phase": "verify", "crop_present": True,
                                    "proposed_bbox": decision.bbox, "proposed_reason": decision.reason,
+                                   "proposed_width_ratio": decision.width_ratio,
                                    "instruction": INSTRUCTION + "\nImage 2 is now the ACTUAL new crop. "
                                    "Return keep only if this new crop is correct; otherwise uncertain. "
-                                   "Do not propose another crop in this verification step."},
+                                   "Return bbox=[] and width_ratio=null. Do not propose another crop or size. "
+                                   "This step verifies crop content, not rendered PDF layout."},
                         ImageDecision, [a["page"]], extra_images=[candidate]))
-                    engine.check_pause(run)
+                    await asyncio.to_thread(engine.check_pause, run)
                     if verify.action == "keep" and verify.reason.strip():
-                        current.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.copy2(candidate, current)
-                        by_id[identifier].update(bbox=decision.bbox, dpi=150)
-                        atomic_json(project / MANIFEST, manifest)
+                        await apply_decision(candidate)
                         row.update(state="FIXED", bbox=decision.bbox, reason=decision.reason + "；复核：" + verify.reason)
                     else:
                         row.update(state="DEFERRED", reason="新裁图未确认，保留原图：" + verify.reason)
@@ -217,9 +292,9 @@ async def repair_images(engine, run):
                 row.update(state="FAILED", reason=exc.message)
             except (ValidationError, OSError, ValueError) as exc:
                 row.update(state="FAILED", reason="图片检查未完成：" + str(exc))
-            atomic_json(checkpoint, row)
-            store.task(rid, key, "image_repair", "PASSED" if row["state"] in ("PASSED", "FIXED") else "DEFERRED",
-                       [a["page"]], {"message": row["reason"]})
+            await write_async(atomic_json, checkpoint, row)
+            await write_async(store.task, rid, key, "image_repair", "PASSED" if row["state"] in ("PASSED", "FIXED") else "DEFERRED",
+                                    [a["page"]], {"message": row["reason"]})
 
     async with engine.task_slots(rid) as slots:
         await asyncio.gather(*(worker(a) for a in selection))
@@ -228,7 +303,7 @@ async def repair_images(engine, run):
     engine.check_pause(run)
     rows = [read_json(base / "image-checks" / (a["id"] + ".json")) for a in selection]
     atomic_json(project / "image-review.json", {"source_result_id": run["image_repair"]["source_result_id"], "images": rows})
-    correct_legacy_size(project, manifest["assets"])
+    await write_async(correct_legacy_size, project, manifest["assets"])
     store.task(rid, "image-compile", "image_compile", "RUNNING", [])
     report = await compile_tex(project)
     atomic_json(base / "compile-report.json", report)
@@ -253,14 +328,14 @@ def register_image_routes(app, store, engine):
         return {"book_id": bid, "result_id": book["retained_result"]["id"], "images": rows}
 
     @app.get("/api/books/{bid}/images/{identifier}")
-    async def book_crop(bid: str, identifier: str, result_id: str):
+    def book_crop(bid: str, identifier: str, result_id: str):
         book = store.get("book", bid)
         if book["retained_result"]["id"] != result_id:
             raise WorkflowError("STALE_RESULT", "书库结果已更新，请刷新")
         path = asset_path(retained_directory(store, book), identifier)
         if not path.is_file():
             raise WorkflowError("IMAGE_MISSING", "图片文件缺失", 404)
-        return FileResponse(path, media_type="image/png", headers={"Cache-Control": "no-store"})
+        return FileResponse(path, media_type="image/png", headers={"Cache-Control": "private, no-cache"})
 
     @app.post("/api/books/{bid}/repair-images")
     async def start(bid: str, command: ImageRepairCreate):
@@ -272,7 +347,7 @@ def register_image_routes(app, store, engine):
         return store.summary(run)
 
     @app.get("/api/runs/{rid}/images")
-    async def status(rid: str):
+    def status(rid: str):
         run = repair_run(store, rid)
         base = store.directory(rid)
         rows = []
@@ -282,14 +357,17 @@ def register_image_routes(app, store, engine):
             row = read_json(path) if path.exists() else {"state": tasks.get("image-" + a["id"], {}).get("state", "PENDING")}
             if row["state"] == "RUNNING" and run["state"] != "RUNNING":
                 row["state"] = "PAUSED" if run["state"] == "PAUSED" else "PENDING"
+            current = asset_path(base / "tex", a["id"])
+            stat = current.stat() if current.is_file() else None
             rows.append(a | row | {"before_available": asset_path(base / "image-original", a["id"]).is_file(),
-                                   "available": asset_path(base / "tex", a["id"]).is_file()})
+                                   "available": stat is not None,
+                                   "image_version": f"{stat.st_mtime_ns}-{stat.st_size}" if stat else "missing"})
         report = base / "compile-report.json"
         return {"run": store.summary(run), "images": rows,
                 "compile": read_json(report) if report.exists() else None}
 
     @app.get("/api/runs/{rid}/images/{identifier}")
-    async def crop(rid: str, identifier: str, version: Literal["before", "after"] = Query("after")):
+    def crop(rid: str, identifier: str, version: Literal["before", "after"] = Query("after")):
         run = repair_run(store, rid)
         if identifier not in run["image_repair"]["asset_ids"]:
             raise WorkflowError("IMAGE_MISSING", "图片不属于本任务", 404)
@@ -297,4 +375,4 @@ def register_image_routes(app, store, engine):
         path = asset_path(base / ("image-original" if version == "before" else "tex"), identifier)
         if not path.is_file():
             raise WorkflowError("IMAGE_MISSING", "图片文件缺失", 404)
-        return FileResponse(path, media_type="image/png", headers={"Cache-Control": "no-store"})
+        return FileResponse(path, media_type="image/png", headers={"Cache-Control": "private, no-cache"})

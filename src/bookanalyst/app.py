@@ -112,7 +112,7 @@ def create_app(workspace=None, data_dir=None):
         ]
 
     @app.get("/api/bootstrap")
-    async def bootstrap():
+    def bootstrap():
         return {
             "token": token,
             "version": "0.7.1",
@@ -127,6 +127,8 @@ def create_app(workspace=None, data_dir=None):
 
     def public_settings():
         value = store.get("settings", "main")
+        value["stage_models"] = settings_models(value)
+        value.setdefault("image_repair_concurrency", value.get("llm_concurrency", 2))
         for name, conn in value["connections"].items():
             conn.pop("max_in_flight", None)
             if conn["kind"] == "openai_compatible":
@@ -214,7 +216,7 @@ def create_app(workspace=None, data_dir=None):
         return store.summary(store.create_run(config, book))
 
     @app.get("/api/runs/{rid}/status")
-    async def status(rid: str):
+    def status(rid: str):
         run = store.get("run", rid)
         result = store.summary(run)
         result["reference_review_count"] = len(review_records(store.directory(rid)))
@@ -235,7 +237,7 @@ def create_app(workspace=None, data_dir=None):
                                f"/api/books/{run['source']['id']}/source", download)
 
     @app.get("/api/runs/{rid}/tasks")
-    async def tasks(rid: str):
+    def tasks(rid: str):
         store.get("run", rid)
         return store.tasks(rid)
 
@@ -244,7 +246,7 @@ def create_app(workspace=None, data_dir=None):
         return await engine.start(rid, command)
 
     @app.post("/api/runs/{rid}/pause")
-    async def pause(rid: str, command: Operation):
+    def pause(rid: str, command: Operation):
         engine.pause(rid, command)
         return {"ok": True}
 

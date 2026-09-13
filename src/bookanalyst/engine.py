@@ -6,7 +6,7 @@ from contextlib import AsyncExitStack, asynccontextmanager
 from pydantic import ValidationError
 from pathlib import Path
 from PIL import Image
-from .store import WorkflowError, atomic_json, atomic_text, digest, file_hash
+from .store import WorkflowError, atomic_json, atomic_text, digest, file_hash, write_async
 from .models import STAGES, WORKFLOW_VERSION
 from .pdf import render_page, inspect_pdf
 from .documents import (
@@ -68,16 +68,12 @@ class Engine:
 
     async def image(self, book, page, dpi=150):
         path = self.store.root / "images" / book["sha256"] / f"{page}-{dpi}.png"
-        if not path.exists():
-            key = str(path)
-            lock = self.rendering.setdefault(key, asyncio.Lock())
-            async with lock:
-                if not path.exists():
-                    data, _ = await asyncio.to_thread(
-                        render_page, book["path"], page - 1, dpi
-                    )
-                    path.parent.mkdir(parents=True, exist_ok=True)
-                    path.write_bytes(data)
+        lock = self.rendering.setdefault(str(path), asyncio.Lock())
+        async with lock:
+            if not path.exists():
+                data, _ = await asyncio.to_thread(render_page, book["path"], page - 1, dpi)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                await write_async(path.write_bytes, data)
         return path
 
     def launch(self, rid):
@@ -172,8 +168,8 @@ class Engine:
 
     @asynccontextmanager
     async def task_slots(self, rid, cap=None):
-        def current_limit():
-            current = refresh_pending(self.store, rid)
+        async def current_limit():
+            current = await asyncio.to_thread(refresh_pending, self.store, rid)
             limit = current["config"]["llm_concurrency"]
             return max(1, min(limit, cap) if cap is not None else limit)
 
@@ -242,14 +238,9 @@ class Engine:
             )
         atomic_json(path, {"epoch": epoch, "attempts": attempts + 1})
 
-    async def ask(self, run, key, purpose, payload, schema, pages, extra_images=()):
-        self.check_pause(run)
-        run = copy.deepcopy(self.live(run["id"]))
-        images = [await self.image(run["source"], p) for p in pages] + list(
-            extra_images
-        )
-        run = await request_run(self.providers, run["id"], purpose,
-                                repair=bool(payload.get("repair_feedback")), require_image=bool(images))
+    def _ask_context(self, run, key, purpose, payload, schema, pages):
+        """Prepare checkpoints and schemas without blocking HTTP status requests."""
+        contract = schema.model_json_schema()
         payload = dict(payload, page_images=pages)
         previous = next(
             (t for t in self.store.tasks(run["id"]) if t["id"] == key), None
@@ -263,20 +254,30 @@ class Engine:
             {
                 "payload": payload,
                 "model": run["config"]["model"],
-                "schema": schema.model_json_schema(),
+                "schema": contract,
                 "source": run["source"]["sha256"],
             }
         )
         cache = self.store.directory(run["id"]) / "responses" / f"{fingerprint}.json"
         self.store.task(run["id"], key, purpose, "RUNNING", pages)
+        return payload, contract, cache
+
+    async def ask(self, run, key, purpose, payload, schema, pages, extra_images=()):
+        run = await asyncio.to_thread(self.live, run["id"])
+        if run.get("pause_requested"):
+            raise WorkflowError("PAUSED", "已停止派发并保存完成结果")
+        images = [await self.image(run["source"], p) for p in pages] + list(extra_images)
+        run = await request_run(self.providers, run["id"], purpose,
+                                repair=bool(payload.get("repair_feedback")), require_image=bool(images))
+        payload, contract, cache = await write_async(self._ask_context, run, key, purpose, payload, schema, pages)
         if cache.exists():
-            return read(cache)
+            return await asyncio.to_thread(read, cache)
         try:
             repairing = purpose in ("compile_repair", "counter_repair") or bool(
                 payload.get("repair_feedback")
             ) or (purpose == "seams" and payload.get("tool_round", 0) > 0)
             if repairing:
-                self.consume_repair_attempt(run, key, purpose)
+                await write_async(self.consume_repair_attempt, run, key, purpose)
             run["request_task_id"] = key
             run["request_is_repair"] = repairing
             run["request_phase"] = payload.get("phase")
@@ -285,13 +286,13 @@ class Engine:
                 "model",
                 purpose,
                 json.dumps(payload, ensure_ascii=False),
-                schema.model_json_schema(),
+                contract,
                 images,
             )
-            atomic_json(cache, result)
+            await write_async(atomic_json, cache, result)
             return result
         except WorkflowError as e:
-            self.store.task(
+            await write_async(self.store.task,
                 run["id"],
                 key,
                 purpose,

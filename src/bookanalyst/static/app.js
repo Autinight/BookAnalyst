@@ -505,6 +505,7 @@ document.addEventListener("submit", async (event) => {
     s.connections = readConnections(event.target, settings);
     s.stage_models = readStageModels(event.target, data.model_stages);
     s.llm_concurrency = Number(f.get("workflow_concurrency"));
+    s.image_repair_concurrency = Number(f.get("image_repair_concurrency"));
     settings = await api("/api/settings", { method: "PUT", body: s });
     if (route === "settings") {
       $("#main").innerHTML = views.settings(settings, data.model_stages);

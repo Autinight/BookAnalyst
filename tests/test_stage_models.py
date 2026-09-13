@@ -59,6 +59,57 @@ def test_settings_roundtrip_and_new_run_use_stage_models(app):
             assert client.get('/api/settings').json()['stage_models'] == saved['stage_models']
 
 
+def test_legacy_image_settings_are_compatible_but_saved_independently(app):
+    store = app.state.store
+    legacy = install(store)
+    legacy['stage_models'].pop('image_repair')
+    legacy.pop('image_repair_concurrency', None)
+    store.put('settings', 'main', legacy)
+    with client_for(app) as client:
+        settings = client.get('/api/settings').json()
+        assert settings['stage_models']['image_repair'] == legacy['stage_models']['convert']
+        assert settings['image_repair_concurrency'] == legacy['llm_concurrency']
+        assert store.get('settings', 'main') == legacy  # Reading does not migrate the DB.
+        settings['stage_models']['image_repair']['model_id'] = 'independent-vision'
+        settings['image_repair_concurrency'] = 13
+        assert client.put('/api/settings', json=settings).status_code == 200
+        # An old open form can still save without erasing the independent fields.
+        legacy['stage_models']['convert']['model_id'] = 'new-converter'
+        legacy['llm_concurrency'] = 200
+        saved = client.put('/api/settings', json=legacy)
+        assert saved.status_code == 200
+        assert saved.json()['stage_models']['image_repair']['model_id'] == 'independent-vision'
+        assert saved.json()['image_repair_concurrency'] == 13
+        assert saved.json()['llm_concurrency'] == 200
+        for invalid in [0, -1, 1.5, True]:
+            assert client.put('/api/settings', json=saved.json() | {'image_repair_concurrency': invalid}).status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_old_image_run_keeps_model_until_explicit_refresh(app, monkeypatch):
+    from bookanalyst.model_config import stage_binding
+    store, engine = app.state.store, app.state.engine
+    settings = install(store)
+    settings['image_repair_concurrency'] = 9
+    store.put('settings', 'main', settings)
+    run = make_run(app)
+    run['kind'] = 'image_repair'
+    run['config']['stage_models'] = bindings()
+    run['config']['stage_models'].pop('image_repair')
+    original = copy.deepcopy(run['config']['stage_models']['convert'])
+    store.put('run', run['id'], run)
+    assert stage_binding(run['config'], 'image_repair') == original
+    async def resolve(binding, require_image=False): return dict(binding), {}
+    monkeypatch.setattr(engine.providers, 'resolve', resolve)
+    snapshot = await request_run(engine.providers, run['id'], 'image_repair', require_image=True)
+    assert snapshot['config']['model'] == original
+    await engine.rebind(run['id'], RunModelUpdate(revision=run['revision'], operation_id='image-refresh-settings'))
+    snapshot = await request_run(engine.providers, run['id'], 'image_repair', require_image=True)
+    assert snapshot['config']['model'] == settings['stage_models']['image_repair']
+    assert snapshot['config']['llm_concurrency'] == 9
+    assert store.get('settings', 'main')['llm_concurrency'] == 4
+
+
 @pytest.mark.asyncio
 async def test_all_requests_use_their_own_stage_even_during_repair(app, monkeypatch):
     engine, store = app.state.engine, app.state.store

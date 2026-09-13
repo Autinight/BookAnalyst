@@ -1,8 +1,8 @@
 """Small SQLite records; TeX, page images and model responses live in files."""
 
-import copy, hashlib, json, os, sqlite3, threading, time, uuid
+import asyncio, copy, hashlib, json, os, sqlite3, threading, time, uuid
 from pathlib import Path
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from .models import STAGES, WORKFLOW_VERSION
 
 
@@ -48,6 +48,16 @@ def atomic_text(path, text):
     os.replace(tmp, path)
 
 
+async def write_async(function, *args, **kwargs):
+    """Move durable writes off-loop; finish them before cancellation releases locks."""
+    pending = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
+    try:
+        return await asyncio.shield(pending)
+    except asyncio.CancelledError:
+        await pending
+        raise
+
+
 class Store:
     def __init__(self, root):
         self.root = Path(root).resolve()
@@ -66,18 +76,22 @@ class Store:
             """)
 
     @contextmanager
-    def connection(self):
-        with self.lock:
-            db = sqlite3.connect(self.db, timeout=30)
+    def connection(self, *, read_only=False):
+        # WAL readers can see committed state while a writer is active. Do not
+        # queue web status reads behind every model receipt/checkpoint write.
+        with nullcontext() if read_only else self.lock:
+            db = sqlite3.connect(self.db.as_uri() + "?mode=ro", uri=True, timeout=30) if read_only else sqlite3.connect(self.db, timeout=30)
             db.row_factory = sqlite3.Row
             try:
+                if read_only:
+                    db.execute("PRAGMA query_only=ON")
                 with db:
                     yield db
             finally:
                 db.close()
 
     def get(self, kind, key):
-        with self.connection() as db:
+        with self.connection(read_only=True) as db:
             row = db.execute(
                 "SELECT payload FROM objects WHERE kind=? AND id=?", (kind, key)
             ).fetchone()
@@ -118,7 +132,7 @@ class Store:
                 )
 
     def list(self, kind, limit=100):
-        with self.connection() as db:
+        with self.connection(read_only=True) as db:
             return [
                 json.loads(r[0])
                 for r in db.execute(
@@ -221,7 +235,7 @@ class Store:
         self.change(rid, lambda r: None)
 
     def tasks(self, rid, stage=None):
-        with self.connection() as db:
+        with self.connection(read_only=True) as db:
             rows = db.execute(
                 "SELECT * FROM tasks WHERE run_id=?"
                 + (" AND stage=?" if stage else "")
@@ -319,7 +333,7 @@ class Store:
             db.execute("UPDATE calls SET metadata=? WHERE id=?", (encode(meta), row["id"]))
 
     def calls(self, rid):
-        with self.connection() as db:
+        with self.connection(read_only=True) as db:
             rows = db.execute(
                 "SELECT * FROM calls WHERE run_id=? ORDER BY rowid", (rid,)
             ).fetchall()

@@ -14,6 +14,7 @@ from pydantic import ValidationError
 DEFAULT_SETTINGS = {
     "stage_models": {},
     "llm_concurrency": 2,
+    "image_repair_concurrency": 2,
     "default_connection": "openai_subscription",
     "connections": {
         "openai_subscription": {
@@ -103,6 +104,8 @@ def validate_settings(value):
         raise WorkflowError("INVALID_CONFIG", "默认连接不存在", 422)
     if type(value["llm_concurrency"]) is not int or value["llm_concurrency"] < 1:
         raise WorkflowError("INVALID_CONFIG", "并行任务数必须为正整数", 422)
+    if type(value["image_repair_concurrency"]) is not int or value["image_repair_concurrency"] < 1:
+        raise WorkflowError("INVALID_CONFIG", "图片修复并发必须为正整数", 422)
     bindings = value["stage_models"]
     if not isinstance(bindings, dict) or set(bindings) != set(MODEL_STAGES):
         raise WorkflowError("INVALID_CONFIG", "请完整设置各阶段的模型配置", 422)
@@ -123,8 +126,12 @@ def prepare_settings(value, previous):
     value = copy.deepcopy(value)
     value.setdefault("stage_models", settings_models(previous))
     value.setdefault("llm_concurrency", previous.get("llm_concurrency", 2))
+    value.setdefault("image_repair_concurrency", previous.get("image_repair_concurrency", previous.get("llm_concurrency", 2)))
     if not value["stage_models"]:
         value["stage_models"] = settings_models(value)
+    elif isinstance(value["stage_models"], dict) and "image_repair" not in value["stage_models"]:
+        # A still-open old settings form must not overwrite the new selection.
+        value["stage_models"]["image_repair"] = settings_models(previous)["image_repair"]
     credentials = {}
     for name, conn in value.get("connections", {}).items():
         if conn.get("kind") != "openai_compatible":
