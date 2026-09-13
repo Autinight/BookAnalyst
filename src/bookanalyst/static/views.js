@@ -30,6 +30,7 @@ export const badge = (s) =>
 const requestPurpose = (r) => ({
   setup: "书籍设置", convert: "分批视觉转换", seam: "衔接修复", seams: "衔接修复",
   headings: "章节标题", references: "标签与引用", reference_repair: "识别局部修复", compile_repair: "编译修复", template_apply: "模板重排",
+  image_repair: "图片检查与修复",
 }[r.purpose] || r.purpose);
 const requestTokens = (r) => {
   const usage = r.usage;
@@ -64,7 +65,7 @@ const head = (title, description, actions = "") =>
   `<div class="page-head"><div><h1>${title}</h1><p>${description}</p></div><div class="row">${actions}</div></div>`;
 export function runRows(runs) {
   return runs.length
-    ? `<div class="table-wrap"><table><thead><tr><th>文献</th><th>页面</th><th>状态</th><th></th></tr></thead><tbody>${runs.map((r) => `<tr><td>${e(r.title)}<small>${r.id.slice(0, 8)} · ${r.kind === "manual_layout" ? "公式排版修复" : r.kind === "template" ? "模板重排 · " + e(r.template?.name) : r.legacy ? "历史流程" : "视觉转换"}</small></td><td>${r.pages.join("–")}</td><td>${badge(r.state)}</td><td><button data-run="${r.id}">打开</button></td></tr>`).join("")}</tbody></table></div>`
+    ? `<div class="table-wrap"><table><thead><tr><th>文献</th><th>页面</th><th>状态</th><th></th></tr></thead><tbody>${runs.map((r) => `<tr><td>${e(r.title)}<small>${r.id.slice(0, 8)} · ${r.kind === "image_repair" ? "图片修复" : r.kind === "manual_layout" ? "公式排版修复" : r.kind === "template" ? "模板重排 · " + e(r.template?.name) : r.legacy ? "历史流程" : "视觉转换"}</small></td><td>${r.pages.join("–")}</td><td>${badge(r.state)}</td><td><button data-run="${r.id}">打开</button></td></tr>`).join("")}</tbody></table></div>`
     : `<div class="empty">尚未创建转换任务</div>`;
 }
 const libraryIcons = {
@@ -81,7 +82,7 @@ function bookActions(book, trash, supported) {
   return `<div class="book-actions"><span class="book-open-actions">
     ${trash ? `<button data-book-action="restore" data-book-id="${e(book.id)}"${unavailable}>恢复</button>` : `<button data-new="${e(book.id)}" class="primary">转换</button>`}
     <a class="button" href="/api/books/${e(book.id)}/pdf" target="_blank" rel="noopener" aria-label="查看 ${e(book.title)} 的${book.result ? "生成" : "原书"} PDF" title="${book.result ? "打开已保留的生成 PDF" : "打开原书 PDF"}">PDF ↗</a>
-    ${book.result ? `<a class="button" href="/api/books/${e(book.id)}/source" target="_blank" rel="noopener">原书 ↗</a><a class="button" href="/api/books/${e(book.id)}/project" title="下载已保留的 TeX 工程">TeX ↓</a>${trash ? "" : `<button data-book-action="template" data-book-id="${e(book.id)}">换模板</button>`}` : ""}
+    ${book.result ? `<a class="button" href="/api/books/${e(book.id)}/source" target="_blank" rel="noopener">原书 ↗</a><a class="button" href="/api/books/${e(book.id)}/project" title="下载已保留的 TeX 工程">TeX ↓</a>${trash ? "" : `<button data-book-action="images" data-book-id="${e(book.id)}">修图片</button><button data-book-action="template" data-book-id="${e(book.id)}">换模板</button>`}` : ""}
     </span><span class="book-manage-actions"><button class="book-icon" data-book-action="reveal" data-book-id="${e(book.id)}" aria-label="在资源管理器中显示 ${e(book.title)}"${supported ? ' title="在资源管理器中显示"' : unavailable}>${libraryIcon("folder")}</button>
     ${trash ? "" : `<button class="book-icon" data-book-action="rename" data-book-id="${e(book.id)}" aria-label="重命名 ${e(book.title)}"${supported ? ' title="重命名"' : unavailable}>${libraryIcon("edit")}</button><button class="book-icon danger" data-book-action="delete" data-book-id="${e(book.id)}" aria-label="删除 ${e(book.title)}"${supported ? ' title="移入回收站"' : unavailable}>${libraryIcon("trash")}</button>`}
   </span></div>`;

@@ -17,7 +17,7 @@ MODEL_STAGES = {
     "finish": "最终编译与修复",
     "template_apply": "模板外观迁移",
 }
-PURPOSE_STAGE = {"compile_repair": "finish", "counter_repair": "setup"}
+PURPOSE_STAGE = {"compile_repair": "finish", "counter_repair": "setup", "image_repair": "convert"}
 
 
 def legacy_models(config):

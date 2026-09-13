@@ -667,3 +667,26 @@ dialog h2 {
 #run-config-controls { flex-wrap: wrap; }
 
 .run-model-summary .run-config-note { flex-basis: 100%; }
+
+/* Independent saved-book image repair; only the selected source page is loaded. */
+.image-controls { display: flex; align-items: end; gap: 14px; flex-wrap: wrap; margin-bottom: 20px; }
+.image-controls label { flex: 1 1 260px; min-width: 0; margin: 0; }
+.image-controls select { width: 100%; }
+.image-controls > button { margin-bottom: 1px; }
+.image-actions { flex-wrap: wrap; }
+.image-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; margin: 20px 0; }
+.image-card { background: white; border: 1px solid var(--line); border-radius: 10px; padding: 14px; min-width: 0; }
+.image-card > .row { justify-content: space-between; flex-wrap: wrap; font-size: 12px; }
+.image-select { display: flex; align-items: center; gap: 8px; margin: 0; }
+.image-select input { width: auto; margin: 0; }
+.image-preview { display: flex; justify-content: center; align-items: center; width: 100%; height: 170px; margin: 12px 0; overflow: hidden; background: #f7f8fa; border: 1px solid var(--line); }
+.image-preview img { max-width: 100%; max-height: 100%; object-fit: contain; }
+.image-card p { font-size: 12px; line-height: 1.65; overflow-wrap: anywhere; margin-bottom: 0; }
+.image-id { display: block; color: var(--muted); overflow-wrap: anywhere; }
+#image-detail { background: white; padding: 20px; border: 1px solid var(--line); border-radius: 10px; }
+.image-comparison { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 20px; align-items: start; }
+.image-comparison figure { margin: 0; min-width: 0; }
+.image-comparison figcaption { margin-bottom: 12px; color: var(--muted); }
+.image-comparison img { display: block; max-width: 100%; max-height: 650px; object-fit: contain; }
+#image-detail pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 600px) { .image-grid, .image-comparison { grid-template-columns: 1fr; } .image-controls { align-items: stretch; } }

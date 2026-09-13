@@ -973,6 +973,8 @@ class Engine:
         """Codex edits the live project; the compiler alone decides completion."""
         base = self.store.directory(run["id"])
         project = base / "tex"
+        from .figure_assets import save_manifest
+        save_manifest(project, results, run["source"])
         signature = digest({"results": results, "headings": headings, "setup": setup})
         # Render once. After that, including a pause/restart, disk is authoritative.
         if not (project / "main.tex").exists():
@@ -1190,16 +1192,20 @@ class Engine:
                     atomic_json(base / "symbols.json", index)
                     atomic_json(base / "structured.json", resolved)
                 elif stage == "finish":
-                    if run.get("kind") == "template":
-                        from .templates import apply_template
-                        await apply_template(self, run)
-                    await self.compile(
-                        run,
-                        read(base / "structured.json"),
-                        read(base / "headings.json"),
-                        read(base / "setup.json"),
-                        read(base / "symbols.json"),
-                    )
+                    if run.get("kind") == "image_repair":
+                        from .image_repair import repair_images
+                        await repair_images(self, run)
+                    else:
+                        if run.get("kind") == "template":
+                            from .templates import apply_template
+                            await apply_template(self, run)
+                        await self.compile(
+                            run,
+                            read(base / "structured.json"),
+                            read(base / "headings.json"),
+                            read(base / "setup.json"),
+                            read(base / "symbols.json"),
+                        )
                 state = "PASSED"
                 if stage == "references" and any(
                     (base / name).exists() and read(base / name)

@@ -497,9 +497,7 @@ def apply_seam(left, right, patch):
     return (left[: -len(a)] if a else left) + patch["replacement"], right[len(b) :]
 
 
-PREAMBLE = r"""\usepackage{amsmath,amssymb,amsthm,mathtools,graphicx,hyperref}
-\newcommand{\BAHeading}[1]{\csname bah#1\endcsname}
-\newsavebox{\BAFigureBox}
+FIGURE_PREAMBLE = r"""\newsavebox{\BAFigureBox}
 \newcommand{\BAFigure}[1]{%
   \begingroup
   \sbox{\BAFigureBox}{\includegraphics{assets/#1.png}}%
@@ -514,6 +512,11 @@ PREAMBLE = r"""\usepackage{amsmath,amssymb,amsthm,mathtools,graphicx,hyperref}
   \fi
   \endgroup%
 }
+"""
+
+PREAMBLE = r"""\usepackage{amsmath,amssymb,amsthm,mathtools,graphicx,hyperref}
+\newcommand{\BAHeading}[1]{\csname bah#1\endcsname}
+""" + FIGURE_PREAMBLE + r"""
 \newenvironment{BAReferences}{\begin{enumerate}\renewcommand{\labelenumi}{[\theenumi]}}{\end{enumerate}}
 """
 

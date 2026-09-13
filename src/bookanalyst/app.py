@@ -19,6 +19,7 @@ from .request_history import group_requests, validation_history
 from .reference_review import review_records, review_response
 from .templates import register_template_routes
 from .library import register_library_routes
+from .image_repair import register_image_routes
 from .library_outputs import output_directory, retained_directory, public_result
 from .model_config import MODEL_STAGES, settings_models
 
@@ -101,6 +102,7 @@ def create_app(workspace=None, data_dir=None):
 
     register_library_routes(app, store)
     register_template_routes(app, store, engine)
+    register_image_routes(app, store, engine)
 
     def books(deleted=False):
         return [

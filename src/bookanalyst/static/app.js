@@ -2,6 +2,7 @@ import { addProvider, readConnections, refreshConnectionChoices, connectionName 
 import { api, setToken, escape as e } from "./api.js";
 import * as views from "./views.js";
 import * as templateUI from "./templates.js";
+import * as imageUI from "./image-repair.js";
 import { loadStageModelChoices, readStageModels, stageConnectionChanged } from "./stage-models.js";
 const $ = (s) => document.querySelector(s);
 let data,
@@ -29,6 +30,7 @@ async function bootstrap() {
   setToken(data.token);
 }
 async function navigate(target, id) {
+  imageUI.leave();
   const version = ++routeVersion;
   clearTimeout(pollTimer);
   contentController?.abort();
@@ -41,6 +43,7 @@ async function navigate(target, id) {
   $("#breadcrumb").textContent = {
     library: "书库",
     templates: "TeX 模板",
+    images: "图片修复",
     runs: "运行记录",
     settings: "模型设置",
     run: "文献转换",
@@ -58,6 +61,7 @@ async function navigate(target, id) {
   } else if (target === "run") {
     const result = await api(`/api/runs/${id}/status`);
     if (version !== routeVersion) return;
+    if (result.kind === "image_repair") return await navigate("images", id);
     run = result;
     page = run.pages[0];
     tasks = [];
@@ -71,6 +75,7 @@ async function navigate(target, id) {
   } else {
     await bootstrap();
     if (version !== routeVersion) return;
+    if (target === "images") return await imageUI.mount(data, id);
     $("#main").innerHTML =
       target === "library" ? views.library(data, libraryState) : views.runs(data);
   }
@@ -85,6 +90,7 @@ async function manageBook(button) {
   const action = button.dataset.bookAction, id = button.dataset.bookId;
   const book = [...data.books, ...(data.deleted_books || [])].find(b => b.id === id);
   if (!book) return;
+  if (action === "images") return await navigate("images", id);
   if (action === "template") return await templateUI.openApply(book);
   if (action === "reveal" || action === "restore") {
     const version = routeVersion;
@@ -511,14 +517,14 @@ document.addEventListener("submit", async (event) => {
     button.disabled = false;
   }
 });
-window.addEventListener("hashchange", () =>
-  navigate(location.hash === "#runs" ? "runs" : "library"),
-);
+const hashRoute = () => ["library", "images", "templates", "runs", "settings"].includes(location.hash.slice(1)) ? location.hash.slice(1) : "library";
+window.addEventListener("hashchange", () => navigate(hashRoute()));
 templateUI.init({ navigate, toast });
+imageUI.init({ navigate, toast });
 bootstrap()
   .then(() => {
     const id = new URLSearchParams(location.search).get("run");
-    return navigate(id ? "run" : "library", id);
+    return navigate(id ? "run" : hashRoute(), id);
   })
   .catch((error) => {
     $("#main").textContent = error.message;

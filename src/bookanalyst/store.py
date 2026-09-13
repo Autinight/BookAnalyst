@@ -252,6 +252,7 @@ class Store:
             "book_id": run["source"]["id"],
             "kind": run.get("kind", "conversion"),
             "template": run.get("template"),
+            "image_repair": run.get("image_repair"),
             "legacy": old,
             "pages": [run["config"]["start_page"], run["config"]["end_page"]],
             "stage": run.get("stage"),
