@@ -20,11 +20,11 @@
 
 ## Grok 官方订阅
 
-使用 SuperGrok 或 X Premium+ 账户的浏览器 OAuth，不接收 xAI 密码，也不把访问令牌回显到设置接口。登录复用 Grok CLI 的公开 OAuth client（PKCE，无 client secret），因为 xAI 只接受已登记客户端的回环回调。授权页可能显示 “Grok Build” / “Grok CLI”。
+使用 SuperGrok 或 X Premium+ 账户的设备码 OAuth，不接收 xAI 密码，也不把访问令牌回显到设置接口。登录复用 Grok CLI 的公开 OAuth client，走 RFC 8628 设备码，而不是本机回环端口。授权页可能显示 “Grok Build”。
 
-在设置页点击“登录”，打开 `auth.x.ai` 授权链接。本机在 `http://127.0.0.1:56121/callback` 接收授权码并换取令牌；若该端口被占用，先关闭占用程序再重新登录。登录完成后点击“检查连接”，从 `https://api.x.ai/v1/models` 读取可用对话模型。令牌保存在本地 SQLite 的独立 `credential` 记录中，过期时自动刷新；公开设置只返回 `oauth_configured`。
+在设置页点击“登录”，打开 `accounts.x.ai` 的验证页。若页面要求输入代码，填写本卡片显示的授权码。后台轮询换取令牌。登录完成后点击“检查连接”。令牌保存在本地 SQLite 的独立 `credential` 记录中，过期时自动刷新；公开设置只返回 `oauth_configured`。
 
-结构化请求走 OpenAI 兼容的 Chat Completions，收尾编译走 pi.dev SDK，与自定义 API 相同，不使用 Codex。图像能力按上游模型列表声明；图像生成类 `grok-imagine-*` 不会进入对话模型列表。部分订阅档在登录成功后仍可能对 API 返回 403，此时改用自定义 API 并填写 `XAI` 密钥。
+结构化请求和收尾编译都走 `https://cli-chat-proxy.grok.com/v1` 的 Responses 协议，并带 grok-cli 鉴权头；收尾仍用 pi.dev SDK，不使用 Codex。模型列表优先读上游，读不到时使用 grok-4.6 等回退目录。图像生成类 `grok-imagine-*` 不会进入对话模型列表。部分订阅档在登录成功后仍可能对 API 返回 403，此时改用自定义 API 并填写 xAI 密钥。
 
 旧安装升级后会自动补上该连接，不会覆盖已有 ChatGPT 或自定义供应商。
 

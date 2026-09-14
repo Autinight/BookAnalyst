@@ -1,77 +1,72 @@
-"""Grok SuperGrok / X Premium+ OAuth using the public Grok CLI client."""
+"""Grok SuperGrok / X Premium+ OAuth using the public Grok CLI client.
+
+Login follows OpenHanako / Grok Build: RFC 8628 device code against auth.x.ai,
+then API calls through cli-chat-proxy.grok.com with grok-cli headers.
+"""
 
 import asyncio
-import base64
-import hashlib
-import html
-import secrets
 import time
-from urllib.parse import parse_qs, quote, urlencode, urlparse
+from urllib.parse import urlparse
 
 from .store import WorkflowError
 
 CLIENT_ID = "b1a00492-073a-47ea-816f-4c329264a828"
-AUTHORIZE_URL = "https://auth.x.ai/oauth2/authorize"
+DISCOVERY_URL = "https://auth.x.ai/.well-known/openid-configuration"
+DEVICE_CODE_URL = "https://auth.x.ai/oauth2/device/code"
 TOKEN_URL = "https://auth.x.ai/oauth2/token"
+DEVICE_CODE_GRANT = "urn:ietf:params:oauth:grant-type:device_code"
 SCOPE = "openid profile email offline_access grok-cli:access api:access"
-API_BASE = "https://api.x.ai/v1"
-OAUTH_HOST = "127.0.0.1"
-OAUTH_PORT = 56121
-REDIRECT_URI = f"http://{OAUTH_HOST}:{OAUTH_PORT}/callback"
+API_BASE = "https://cli-chat-proxy.grok.com/v1"
 REFRESH_SKEW = 120
 LOGIN_TIMEOUT = 300
 FORM_HEADERS = {
     "Accept": "application/json",
     "User-Agent": "BookAnalyst",
 }
-
-SUCCESS_HTML = """<!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><title>BookAnalyst · Grok 登录</title>
-<style>
-body{font-family:system-ui,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#f4f1ea;color:#1b1b1b}
-.c{text-align:center;padding:2rem}p{color:#5c5854}
-</style></head>
-<body><div class="c"><h1>Grok 登录成功</h1>
-<p>可以关闭此页，返回 BookAnalyst 后点击检查连接。</p></div>
-<script>setTimeout(()=>window.close(),1500)</script></body></html>"""
-
-ERROR_HTML = """<!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><title>BookAnalyst · Grok 登录失败</title>
-<style>
-body{font-family:system-ui,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#f4f1ea;color:#1b1b1b}
-.c{text-align:center;padding:2rem}h1{color:#8b1e1e}code{display:block;margin-top:1rem;color:#5c5854}
-</style></head>
-<body><div class="c"><h1>Grok 登录失败</h1><code>__MESSAGE__</code></div></body></html>"""
+CLI_HEADERS = {
+    "x-xai-token-auth": "xai-grok-cli",
+    "x-grok-client-version": "0.7.1",
+    "x-grok-client-identifier": "bookanalyst",
+}
+FALLBACK_MODELS = [
+    {"id": "grok-4.6", "inputModalities": ["text", "image"]},
+    {"id": "grok-4.5-latest", "inputModalities": ["text", "image"]},
+    {"id": "grok-4.5", "inputModalities": ["text", "image"]},
+    {"id": "grok-4.3", "inputModalities": ["text", "image"]},
+    {"id": "grok-build-latest", "inputModalities": ["text", "image"]},
+]
 
 
-def error_page(message):
-    return ERROR_HTML.replace("__MESSAGE__", html.escape(str(message)[:400]))
+def _auth_url(value, name):
+    if not isinstance(value, str) or not value.strip():
+        raise WorkflowError("REQUEST_FAILED", f"Grok 认证配置缺少 {name}", 422)
+    parsed = urlparse(value)
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname != "auth.x.ai"
+        or parsed.port
+        or parsed.username
+        or parsed.password
+        or parsed.fragment
+    ):
+        raise WorkflowError("REQUEST_FAILED", f"Grok 认证地址不可信：{name}", 422)
+    return parsed.geturl()
 
 
-def generate_pkce():
-    verifier = secrets.token_urlsafe(64)
-    digest = hashlib.sha256(verifier.encode("ascii")).digest()
-    challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
-    return verifier, challenge
-
-
-def authorize_url(challenge, state, nonce):
-    query = urlencode(
-        {
-            "response_type": "code",
-            "client_id": CLIENT_ID,
-            "redirect_uri": REDIRECT_URI,
-            "scope": SCOPE,
-            "code_challenge": challenge,
-            "code_challenge_method": "S256",
-            "state": state,
-            "nonce": nonce,
-            "plan": "generic",
-            "referrer": "bookanalyst",
-        },
-        quote_via=quote,
-    )
-    return f"{AUTHORIZE_URL}?{query}"
+def _verify_url(value, name):
+    if not isinstance(value, str) or not value.strip():
+        raise WorkflowError("REQUEST_FAILED", f"Grok 登录未返回 {name}", 422)
+    parsed = urlparse(value)
+    host = (parsed.hostname or "").lower()
+    if (
+        parsed.scheme != "https"
+        or not (host == "x.ai" or host.endswith(".x.ai"))
+        or parsed.port
+        or parsed.username
+        or parsed.password
+    ):
+        raise WorkflowError("REQUEST_FAILED", f"Grok 登录地址不可信：{name}", 422)
+    return parsed.geturl()
 
 
 def credentials_from_tokens(payload, fallback_refresh=""):
@@ -91,13 +86,19 @@ def credentials_from_tokens(payload, fallback_refresh=""):
     }
 
 
-def _token_error(response):
-    detail = " ".join((response.text or "").split())[:200]
-    if response.status_code in (401, 403):
-        message = "Grok 登录被拒绝或当前订阅无法使用 API。可改用自定义 API 密钥。"
+def _token_error(response, payload=None):
+    payload = payload if isinstance(payload, dict) else {}
+    detail = str(payload.get("error_description") or payload.get("error") or "").strip()[:200]
+    if response.status_code in (401, 403) or payload.get("error") in (
+        "access_denied",
+        "authorization_denied",
+    ):
+        message = "Grok 登录被拒绝或当前订阅无法使用 API。"
         if detail:
             message += f" ({detail})"
         return WorkflowError("AUTH_REQUIRED", message, 422)
+    if payload.get("error") == "expired_token":
+        return WorkflowError("AUTH_REQUIRED", "Grok 登录超时，请重新点击登录", 422)
     message = f"Grok 令牌请求失败（HTTP {response.status_code}）"
     if detail:
         message += f"：{detail}"
@@ -105,34 +106,89 @@ def _token_error(response):
 
 
 def credentials_from_response(response, fallback_refresh=""):
-    if not response.is_success:
-        raise _token_error(response)
     try:
         payload = response.json()
     except ValueError as exc:
         raise WorkflowError("REQUEST_FAILED", "Grok 令牌响应不是 JSON", 422) from exc
     if not isinstance(payload, dict):
         raise WorkflowError("REQUEST_FAILED", "Grok 令牌响应无效", 422)
+    if not response.is_success or payload.get("error"):
+        raise _token_error(response, payload)
     return credentials_from_tokens(payload, fallback_refresh)
 
 
-async def exchange_code(client, code, verifier):
+async def discover(client):
+    try:
+        listed = await client.get(DISCOVERY_URL, headers={"Accept": "application/json"})
+        payload = listed.json() if listed.is_success else {}
+        if isinstance(payload, dict):
+            return (
+                _auth_url(payload.get("device_authorization_endpoint"), "device_authorization_endpoint"),
+                _auth_url(payload.get("token_endpoint"), "token_endpoint"),
+            )
+    except (WorkflowError, ValueError, TypeError):
+        pass
+    return DEVICE_CODE_URL, TOKEN_URL
+
+
+async def request_device(client, device_endpoint):
     return await client.post(
-        TOKEN_URL,
+        device_endpoint,
+        data={"client_id": CLIENT_ID, "scope": SCOPE},
+        headers=FORM_HEADERS,
+    )
+
+
+def parse_device(response):
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise WorkflowError("REQUEST_FAILED", "Grok 设备授权响应不是 JSON", 422) from exc
+    if not response.is_success:
+        raise _token_error(response, payload if isinstance(payload, dict) else {})
+    if not isinstance(payload, dict):
+        raise WorkflowError("REQUEST_FAILED", "Grok 设备授权响应无效", 422)
+    device_code = payload.get("device_code")
+    user_code = payload.get("user_code")
+    if not isinstance(device_code, str) or not device_code:
+        raise WorkflowError("REQUEST_FAILED", "Grok 未返回设备授权码", 422)
+    if not isinstance(user_code, str) or not user_code.strip():
+        raise WorkflowError("REQUEST_FAILED", "Grok 未返回用户授权码", 422)
+    uri = payload.get("verification_uri") or payload.get("verification_url")
+    complete = payload.get("verification_uri_complete")
+    interval = payload.get("interval")
+    expires_in = payload.get("expires_in")
+    if not isinstance(interval, (int, float)) or interval <= 0:
+        interval = 5
+    if not isinstance(expires_in, (int, float)) or expires_in <= 0:
+        expires_in = LOGIN_TIMEOUT
+    return {
+        "device_code": device_code,
+        "user_code": user_code.strip(),
+        "verification_uri": _verify_url(uri, "verification_uri"),
+        "verification_uri_complete": (
+            _verify_url(complete, "verification_uri_complete") if complete else ""
+        ),
+        "interval": float(interval),
+        "expires_in": float(expires_in),
+    }
+
+
+async def poll_device(client, token_endpoint, device_code):
+    return await client.post(
+        token_endpoint,
         data={
-            "grant_type": "authorization_code",
-            "code": code,
-            "redirect_uri": REDIRECT_URI,
+            "grant_type": DEVICE_CODE_GRANT,
+            "device_code": device_code,
             "client_id": CLIENT_ID,
-            "code_verifier": verifier,
         },
         headers=FORM_HEADERS,
     )
 
 
-async def refresh_tokens(client, refresh_token):
+async def refresh_tokens(client, refresh_token, token_endpoint=TOKEN_URL):
     return await client.post(
-        TOKEN_URL,
+        token_endpoint,
         data={
             "grant_type": "refresh_token",
             "refresh_token": refresh_token,
@@ -160,7 +216,7 @@ def chat_models(payload):
         if not isinstance(modalities, list) or not modalities:
             modalities = ["text", "image"]
         models.append({"id": model_id, "inputModalities": [str(m) for m in modalities]})
-    return models[:50]
+    return models[:50] or list(FALLBACK_MODELS)
 
 
 def select_model(choices, model_id):
@@ -182,123 +238,56 @@ def http_connection(conn, access_token):
         "name": conn.get("name") or "Grok 官方订阅",
         "enabled": True,
         "base_url": API_BASE,
-        "protocol": "chat_completions",
+        "protocol": "responses",
         "model_id": conn.get("model_id") or "",
         "auth_mode": "bearer",
         "image_support": "supported",
         "timeout_seconds": conn["timeout_seconds"],
         "_access_token": access_token,
+        "_extra_headers": dict(CLI_HEADERS),
     }
 
 
-class LoopbackLogin:
-    def __init__(self):
-        self.verifier, self.challenge = generate_pkce()
-        self.state = secrets.token_urlsafe(32)
-        self.nonce = secrets.token_urlsafe(32)
-        self.auth_url = authorize_url(self.challenge, self.state, self.nonce)
-        self.server = None
-        self._future = None
+class DeviceLogin:
+    def __init__(self, device, token_endpoint):
+        self.device = device
+        self.token_endpoint = token_endpoint
+        self._cancelled = asyncio.Event()
 
-    async def start(self):
-        self._future = asyncio.get_running_loop().create_future()
-        try:
-            self.server = await asyncio.start_server(
-                self._handle, OAUTH_HOST, OAUTH_PORT
-            )
-        except OSError as exc:
-            raise WorkflowError(
-                "AUTH_REQUIRED",
-                f"无法监听 {REDIRECT_URI}，请关闭占用 56121 端口的程序后重试",
-                422,
-            ) from exc
+    @property
+    def auth_url(self):
+        return self.device["verification_uri_complete"] or self.device["verification_uri"]
 
-    async def wait_code(self):
-        try:
-            return await asyncio.wait_for(self._future, LOGIN_TIMEOUT)
-        except TimeoutError as exc:
-            raise WorkflowError(
-                "AUTH_REQUIRED", "Grok 登录超时，请重新点击登录", 422
-            ) from exc
+    @property
+    def user_code(self):
+        return self.device["user_code"]
 
     async def close(self):
-        server = self.server
-        self.server = None
-        if server is not None:
-            server.close()
-            await server.wait_closed()
-        if self._future is not None and not self._future.done():
-            self._future.cancel()
+        self._cancelled.set()
 
-    def _settle(self, result=None, error=None):
-        if self._future is None or self._future.done():
-            return False
-        if error is not None:
-            self._future.set_exception(error)
-        else:
-            self._future.set_result(result)
-        return True
-
-    async def _respond(self, writer, status, body, content_type="text/html; charset=utf-8"):
-        payload = body.encode("utf-8")
-        header = (
-            f"HTTP/1.1 {status}\r\n"
-            f"Content-Type: {content_type}\r\n"
-            f"Content-Length: {len(payload)}\r\n"
-            "Connection: close\r\n"
-            "Cache-Control: no-store\r\n"
-            "\r\n"
-        )
-        writer.write(header.encode("ascii") + payload)
-        await writer.drain()
-
-    async def _handle(self, reader, writer):
-        try:
-            raw = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), 10)
-            line = raw.split(b"\r\n", 1)[0].decode("ascii", "replace")
-            parts = line.split(" ")
-            if len(parts) < 2:
-                await self._respond(writer, 400, error_page("Bad request"))
-                return
-            if parts[0] not in ("GET", "HEAD"):
-                await self._respond(writer, 405, error_page("Method not allowed"))
-                return
-            parsed = urlparse(parts[1])
-            if parsed.path != "/callback":
-                await self._respond(writer, 404, error_page("Not found"))
-                return
-            params = parse_qs(parsed.query)
-            error = (params.get("error_description") or params.get("error") or [None])[0]
-            code = (params.get("code") or [None])[0]
-            got_state = (params.get("state") or [None])[0]
-            if error:
-                message = str(error)[:200]
-                await self._respond(writer, 200, error_page(message))
-                self._settle(error=WorkflowError("AUTH_REQUIRED", message, 422))
-                return
-            if not code:
-                await self._respond(writer, 400, error_page("缺少授权码"))
-                self._settle(error=WorkflowError("AUTH_REQUIRED", "Grok 登录未返回授权码", 422))
-                return
-            if got_state != self.state:
-                await self._respond(writer, 400, error_page("登录状态不匹配"))
-                self._settle(error=WorkflowError("AUTH_REQUIRED", "Grok 登录状态不匹配", 422))
-                return
-            if self._future is not None and self._future.done():
-                await self._respond(writer, 410, error_page("Already handled"))
-                return
-            await self._respond(writer, 200, SUCCESS_HTML)
-            self._settle(result=code)
-        except Exception as exc:
-            if self._future is not None and not self._future.done():
-                self._settle(error=exc)
+    async def wait_tokens(self, client):
+        interval = max(0.05, self.device["interval"])
+        deadline = time.time() + min(LOGIN_TIMEOUT, self.device["expires_in"])
+        while time.time() < deadline:
             try:
-                await self._respond(writer, 500, error_page("Callback failed"))
-            except Exception:
+                await asyncio.wait_for(self._cancelled.wait(), timeout=interval)
+                raise asyncio.CancelledError
+            except TimeoutError:
                 pass
-        finally:
+            response = await poll_device(client, self.token_endpoint, self.device["device_code"])
             try:
-                writer.close()
-                await writer.wait_closed()
-            except Exception:
-                pass
+                payload = response.json()
+            except ValueError:
+                payload = {}
+            if not isinstance(payload, dict):
+                payload = {}
+            error = payload.get("error")
+            if response.is_success and not error:
+                return credentials_from_tokens(payload)
+            if error == "authorization_pending":
+                continue
+            if error == "slow_down":
+                interval += 5
+                continue
+            raise _token_error(response, payload)
+        raise WorkflowError("AUTH_REQUIRED", "Grok 登录超时，请重新点击登录", 422)

@@ -36,6 +36,7 @@ try {
   modelRuntime.registerProvider("bookanalyst", {
     name: "BookAnalyst API", api, baseUrl: config.base_url,
     authHeader: config.auth_mode !== "none",
+    headers: config.headers && typeof config.headers === "object" ? config.headers : undefined,
     models: [{
       id: config.model_id, name: config.model_id, reasoning: level !== "off",
       input: config.image_support === "supported" ? ["text", "image"] : ["text"],

@@ -25,7 +25,7 @@ powershell -File scripts/start.ps1 -Port 8766
 
 ## 模型与数据
 
-优先使用 ChatGPT 官方订阅，模型列表实时取自官方运行时；也可使用 Grok 官方订阅（SuperGrok / X Premium+ 的浏览器 OAuth），以及自定义 OpenAI 兼容 API / vLLM。连接、鉴权及默认模型属于独立设置，见 [供应商配置](docs/llm-providers.md)。自定义 API 密钥直接在设置页输入，由后台本地保存；保存后不回显，不进入导出。旧环境变量配置继续兼容。
+优先使用 ChatGPT 官方订阅，模型列表实时取自官方运行时；也可使用 Grok 官方订阅（SuperGrok / X Premium+ 的设备码登录），以及自定义 OpenAI 兼容 API / vLLM。连接、鉴权及默认模型属于独立设置，见 [供应商配置](docs/llm-providers.md)。自定义 API 密钥直接在设置页输入，由后台本地保存；保存后不回显，不进入导出。旧环境变量配置继续兼容。
 
 完整测试书仍保存在 [532 页数学书](tests/data/books/elliptic-pde-second-order.pdf) 和 [45 页 Wang 论文](tests/data/papers/wang-2022-g-invariant-min-max.pdf)。运行数据与原始请求保存在 `.bookanalyst/`。旧版记录可查看、下载已有产物；新建任务使用 v0.7。重构前的完整代码保存在 Git 提交 `5771789`。
 

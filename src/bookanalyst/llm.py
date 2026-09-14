@@ -244,10 +244,11 @@ class Providers:
         }
 
     def _custom_headers(self, connection_id, conn):
-        if conn.get("auth_mode") != "bearer":
-            return {}
-        token = conn.get("_access_token") or self.api_key(connection_id, conn)
-        return {"Authorization": "Bearer " + token}
+        headers = dict(conn.get("_extra_headers") or {})
+        if conn.get("auth_mode") == "bearer":
+            token = conn.get("_access_token") or self.api_key(connection_id, conn)
+            headers["Authorization"] = "Bearer " + token
+        return headers
 
     def _http_status(self, response):
         if response.status_code in (401, 403):
@@ -453,6 +454,7 @@ class Providers:
                     headers={
                         "Authorization": "Bearer " + token,
                         "Accept": "application/json",
+                        **grok_oauth.CLI_HEADERS,
                     },
                 )
         except httpx.TimeoutException:
@@ -460,20 +462,24 @@ class Providers:
         except httpx.RequestError:
             return {"status": "REQUEST_FAILED", "models": [], "message": "无法连接 Grok 模型服务"}
         code, message = self._http_status(listed)
+        if code == "AUTH_REQUIRED":
+            return {
+                "status": code,
+                "models": [],
+                "message": "Grok 登录无效或订阅无权使用 API，请重新登录",
+            }
+        if listed.status_code in (404, 405):
+            return {
+                "status": "READY",
+                "models": list(grok_oauth.FALLBACK_MODELS),
+                "message": "连接正常",
+            }
         if code:
-            if code == "AUTH_REQUIRED":
-                message = "Grok 登录无效或订阅无权使用 API，请重新登录"
             return {"status": code, "models": [], "message": message}
         try:
             models = grok_oauth.chat_models(listed.json())
         except ValueError:
-            models = []
-        if not models:
-            return {
-                "status": "MODEL_UNAVAILABLE",
-                "models": [],
-                "message": "Grok 账户未返回可用对话模型",
-            }
+            models = list(grok_oauth.FALLBACK_MODELS)
         return {"status": "READY", "models": models, "message": "连接正常"}
 
     async def _cancel_grok_login(self):
@@ -493,12 +499,8 @@ class Providers:
 
     async def _complete_grok_login(self, connection_id, session):
         try:
-            code = await session.wait_code()
             async with httpx.AsyncClient(timeout=30, transport=self.transport) as client:
-                response = await grok_oauth.exchange_code(
-                    client, code, session.verifier
-                )
-            tokens = grok_oauth.credentials_from_response(response)
+                tokens = await session.wait_tokens(client)
             self.store.put("credential", connection_id, tokens)
         finally:
             await session.close()
@@ -508,8 +510,10 @@ class Providers:
 
     async def _grok_login(self, connection_id):
         await self._cancel_grok_login()
-        session = grok_oauth.LoopbackLogin()
-        await session.start()
+        async with httpx.AsyncClient(timeout=30, transport=self.transport) as client:
+            device_url, token_url = await grok_oauth.discover(client)
+            response = await grok_oauth.request_device(client, device_url)
+        session = grok_oauth.DeviceLogin(grok_oauth.parse_device(response), token_url)
         self._grok_login_session = session
         self._grok_login_task = asyncio.create_task(
             self._complete_grok_login(connection_id, session),
@@ -520,8 +524,9 @@ class Providers:
         )
         return {
             "auth_url": session.auth_url,
-            "login_id": session.state,
-            "message": "在浏览器完成授权；页面可能显示 Grok Build。完成后关闭该页并检查连接。",
+            "user_code": session.user_code,
+            "login_id": session.user_code,
+            "message": f"若页面要求输入代码，填写 {session.user_code}。完成后回到这里点击检查连接。",
         }
 
     async def resolve(self, binding, require_image=False):

@@ -1,13 +1,12 @@
 """Grok OAuth login, token refresh, and OpenAI-compatible calls."""
 
 import time
-from urllib.parse import parse_qs, urlparse
 
 import httpx
 import pytest
 
 from bookanalyst.app import create_app
-from bookanalyst.grok_oauth import API_BASE, CLIENT_ID, REDIRECT_URI
+from bookanalyst.grok_oauth import API_BASE, CLIENT_ID, CLI_HEADERS
 from bookanalyst.store import WorkflowError
 from test_providers import client_for
 from test_request_retry import SCHEMA, ready_run
@@ -16,12 +15,35 @@ from test_request_retry import SCHEMA, ready_run
 def grok_transport(access="access-1", refresh="refresh-1", models=None):
     models = models or [{"id": "grok-4.6"}, {"id": "grok-imagine-image"}]
     seen = []
+    polls = {"device": 0}
 
     def handle(request):
         seen.append(request)
         body = request.content.decode() if request.content else ""
         path = request.url.path
-        if request.url.host == "auth.x.ai" and path.endswith("/token"):
+        host = request.url.host
+        if host == "auth.x.ai" and path.endswith("/.well-known/openid-configuration"):
+            return httpx.Response(
+                200,
+                json={
+                    "device_authorization_endpoint": "https://auth.x.ai/oauth2/device/code",
+                    "token_endpoint": "https://auth.x.ai/oauth2/token",
+                },
+            )
+        if host == "auth.x.ai" and path.endswith("/device/code"):
+            assert f"client_id={CLIENT_ID}" in body.replace("%3A", ":") or CLIENT_ID in body
+            return httpx.Response(
+                200,
+                json={
+                    "device_code": "dev-1",
+                    "user_code": "ABCD-EFGH",
+                    "verification_uri": "https://accounts.x.ai/activate",
+                    "verification_uri_complete": "https://accounts.x.ai/activate?user_code=ABCD-EFGH",
+                    "expires_in": 300,
+                    "interval": 0.05,
+                },
+            )
+        if host == "auth.x.ai" and path.endswith("/token"):
             if "grant_type=refresh_token" in body:
                 return httpx.Response(
                     200,
@@ -31,8 +53,10 @@ def grok_transport(access="access-1", refresh="refresh-1", models=None):
                         "expires_in": 3600,
                     },
                 )
-            if "grant_type=authorization_code" in body:
-                assert "code_verifier=" in body
+            if "device_code" in body:
+                polls["device"] += 1
+                if polls["device"] == 1:
+                    return httpx.Response(400, json={"error": "authorization_pending"})
                 return httpx.Response(
                     200,
                     json={
@@ -42,20 +66,26 @@ def grok_transport(access="access-1", refresh="refresh-1", models=None):
                     },
                 )
             return httpx.Response(400, json={"error": "invalid_request"})
-        if request.url.host == "api.x.ai" and path.endswith("/models"):
+        if host == "cli-chat-proxy.grok.com" and path.endswith("/models"):
             header = request.headers.get("Authorization")
             if header not in ("Bearer " + access, "Bearer access-2"):
                 return httpx.Response(401)
+            assert request.headers.get("x-xai-token-auth") == CLI_HEADERS["x-xai-token-auth"]
             return httpx.Response(200, json={"data": models})
-        if path.endswith("/chat/completions"):
+        if path.endswith("/responses"):
             assert request.headers.get("Authorization", "").startswith("Bearer ")
+            assert request.headers.get("x-xai-token-auth") == CLI_HEADERS["x-xai-token-auth"]
             return httpx.Response(
                 200,
                 json={
-                    "choices": [
-                        {"finish_reason": "stop", "message": {"content": '{"value":1}'}}
+                    "status": "completed",
+                    "output": [
+                        {
+                            "type": "message",
+                            "content": [{"type": "output_text", "text": '{"value":1}'}],
+                        }
                     ],
-                    "usage": {"prompt_tokens": 3, "completion_tokens": 1},
+                    "usage": {"input_tokens": 3, "output_tokens": 1},
                 },
             )
         return httpx.Response(404)
@@ -120,15 +150,8 @@ async def test_grok_login_exchanges_code_and_lists_models(app):
     providers.transport = transport
     try:
         result = await providers.login("grok_subscription")
-        query = parse_qs(urlparse(result["auth_url"]).query)
-        assert query["client_id"] == [CLIENT_ID]
-        assert query["redirect_uri"] == [REDIRECT_URI]
-        assert query["plan"] == ["generic"]
-        state = query["state"][0]
-        async with httpx.AsyncClient() as client:
-            response = await client.get(f"{REDIRECT_URI}?code=test-code&state={state}")
-        assert response.status_code == 200
-        assert "登录成功" in response.text
+        assert result["user_code"] == "ABCD-EFGH"
+        assert result["auth_url"].startswith("https://accounts.x.ai/")
         await wait_login(providers)
         cred = app.state.store.get("credential", "grok_subscription")
         assert cred["access_token"] == "access-1"
@@ -136,7 +159,7 @@ async def test_grok_login_exchanges_code_and_lists_models(app):
         status = await providers.status("grok_subscription")
         assert status["status"] == "READY"
         assert [m["id"] for m in status["models"]] == ["grok-4.6"]
-        assert any(request.url.path.endswith("/token") for request in seen)
+        assert any("/device/code" in str(request.url) for request in seen)
     finally:
         await providers.close()
 
@@ -168,8 +191,9 @@ async def test_grok_refresh_and_generate(app):
         assert store.get("credential", "grok_subscription")["access_token"] == "access-2"
         result = await providers.generate(run, "model", "convert", "ping", SCHEMA)
         assert result == {"value": 1}
-        completion = next(r for r in seen if r.url.path.endswith("/chat/completions"))
+        completion = next(r for r in seen if r.url.path.endswith("/responses"))
         assert completion.headers["Authorization"] == "Bearer access-2"
+        assert completion.headers["x-xai-token-auth"] == "xai-grok-cli"
         assert str(completion.url).startswith(API_BASE)
     finally:
         await providers.close()

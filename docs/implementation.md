@@ -11,7 +11,7 @@
 | `finisher.py` | 编译连接分流、持续 Codex 会话与原生事件恢复 |
 | `pi_compiler.py` / `pi_runtime/agent.mjs` | 自定义 API 的 pi.dev SDK 编译会话、原生工具、自动压缩和中断恢复 |
 | `llm.py` | ChatGPT 官方订阅、Grok OAuth、自定义 API、真实用量、请求回执恢复 |
-| `grok_oauth.py` | Grok SuperGrok / X Premium+ 的 PKCE 回环登录、令牌刷新与模型列表 |
+| `grok_oauth.py` | Grok SuperGrok / X Premium+ 的设备码登录、令牌刷新与 cli-chat-proxy 调用 |
 | `store.py` | SQLite 小记录、幂等操作、任务和请求账本、原子文件保存 |
 | `pdf.py` / `tex.py` | PDF 图像缓存 / PATH 中的 XeLaTeX 编译 |
 | `app.py` | 本地 API、来源图片、按页 TeX、导出 |

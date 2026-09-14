@@ -84,7 +84,8 @@ async def repair_project(providers, run, project, feedback, instructions, bindin
                   model_id=binding["model_id"], effort=metadata["reasoning_effort"],
                   base_url=conn["base_url"].rstrip("/"), protocol=conn["protocol"],
                   auth_mode=conn["auth_mode"], api_key=key,
-                  image_support=conn["image_support"], timeout_seconds=conn["timeout_seconds"])
+                  image_support=conn["image_support"], timeout_seconds=conn["timeout_seconds"],
+                  headers=conn.get("_extra_headers") or {})
     if store.get("run", run["id"]).get("pause_requested"):
         raise WorkflowError("PAUSED", "已保存当前工程")
     call_id = store.reserve(run["id"], run["revision"], "llm", 1, metadata)

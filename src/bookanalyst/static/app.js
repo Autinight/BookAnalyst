@@ -380,7 +380,13 @@ document.addEventListener("click", async (event) => {
       try {
         const result = await api(`/api/connections/${encodeURIComponent(id)}/${action}`,
           action === "status" ? {} : { method: "POST", body: {} });
-        if (login) status.innerHTML = `<a href="${e(result.auth_url)}" target="_blank" rel="noopener">打开官方登录页面 ↗</a>${result.message ? `<br><small>${e(result.message)}</small>` : ""}`;
+        if (login) {
+          const parts = [];
+          if (result.auth_url) parts.push(`<a href="${e(result.auth_url)}" target="_blank" rel="noopener">打开官方登录页面 ↗</a>`);
+          if (result.user_code) parts.push(`授权码 <code>${e(result.user_code)}</code>`);
+          if (result.message) parts.push(`<small>${e(result.message)}</small>`);
+          status.innerHTML = parts.join("<br>");
+        }
         else {
           const names = (result.models || []).map(m => m.model || m.id).filter(Boolean);
           status.textContent = result.status === "READY"
