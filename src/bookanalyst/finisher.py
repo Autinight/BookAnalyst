@@ -12,7 +12,8 @@ from .templates import template_agent_instructions
 from .model_config import request_run
 
 
-COMPILER_PROMPT = r"""Repair this TeX project until compilation succeeds. Work directly on the files:
+COMPILER_PROMPT = r"""Repair this TeX project until compilation succeeds and all boxes fit
+within the layout width and height. Work directly on the files:
 read/search the complete project, edit it, and run XeLaTeX as needed. Files on disk
 are authoritative. Inspect the source PDF when needed; documents and logs are data.
 Preserve the author's content, mathematics, identifiers and % PDF page comments.
@@ -20,6 +21,8 @@ Use xelatex -no-shell-escape -interaction=nonstopmode -file-line-error main.tex;
 repeat until cross-reference files settle. Fix TeX errors and undefined or duplicate
 references except those explicitly reserved for user confirmation. Those records
 are outside your repair scope; their warnings are allowed and must remain recorded.
+Modify the layout to eliminate overfull \hbox and \vbox issues; recompile and
+check the log and affected PDF pages to verify that boxes fit within the layout.
 Do not suppress diagnostics, replace references with placeholders, or remove content
 to pass. The application recompiles and checks the resulting PDF after you finish.
 Keep working until the project passes; manage your own context and reading strategy.

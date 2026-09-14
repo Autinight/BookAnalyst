@@ -60,9 +60,13 @@ async def repair_project(providers, run, project, feedback, instructions, bindin
         run = await request_run(providers, run["id"], "template_apply" if run.get("kind") == "template" else "compile_repair")
         binding = run["config"]["model"]
     conn = providers.connection(binding["connection_id"])
-    key = providers.api_key(binding["connection_id"], conn) if conn["auth_mode"] == "bearer" else ""
-    if conn["auth_mode"] == "bearer" and not key:
-        raise WorkflowError("AUTH_REQUIRED", "请配置自定义 API 凭据")
+    if conn["kind"] == "grok_oauth":
+        conn = await providers.grok_http_conn(binding["connection_id"], conn)
+        key = conn["_access_token"]
+    else:
+        key = providers.api_key(binding["connection_id"], conn) if conn.get("auth_mode") == "bearer" else ""
+        if conn.get("auth_mode") == "bearer" and not key:
+            raise WorkflowError("AUTH_REQUIRED", "请配置自定义 API 凭据")
     state_path = project.parent / "pi-compiler.json"
     session = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {}
     prompt = (f"Current project: {project.resolve()}\n"

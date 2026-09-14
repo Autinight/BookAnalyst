@@ -10,7 +10,8 @@
 | `reference_tools.py` | label/ref 的全书只读搜索、按页正文读取和 PDF 文字共享缓存 |
 | `finisher.py` | 编译连接分流、持续 Codex 会话与原生事件恢复 |
 | `pi_compiler.py` / `pi_runtime/agent.mjs` | 自定义 API 的 pi.dev SDK 编译会话、原生工具、自动压缩和中断恢复 |
-| `llm.py` | 官方订阅、自定义 API、真实用量、请求回执恢复 |
+| `llm.py` | ChatGPT 官方订阅、Grok OAuth、自定义 API、真实用量、请求回执恢复 |
+| `grok_oauth.py` | Grok SuperGrok / X Premium+ 的 PKCE 回环登录、令牌刷新与模型列表 |
 | `store.py` | SQLite 小记录、幂等操作、任务和请求账本、原子文件保存 |
 | `pdf.py` / `tex.py` | PDF 图像缓存 / PATH 中的 XeLaTeX 编译 |
 | `app.py` | 本地 API、来源图片、按页 TeX、导出 |
@@ -26,4 +27,4 @@
 
 `numbering.py` 将全书计数规则编译为普通 TeX 声明，直接收集正文中的原生标签与引用，按出现位置应用独立标签与引用阶段的键修改；该阶段读取标题阶段的最终结果以计算章节作用域。引用按异常组并发处理，同一原始类型与编号的重名标签归同组；先完成重名消解，再处理缺失键。`reference-groups/` 保存成功组，程序按出现位置统一合并补丁。标题与引用分别保存和恢复，编号正确性由收尾 agent 结合原页和编译结果判断。转换员工不生成额外登记表。新数据目录为 `runs/<id>/v7/`；v0.6 已完成工程仍可下载。
 
-自定义 API 密钥由设置页密码框输入，后台通过 SQLite 事务与连接设置一起保存到独立 `credential` 记录；公开设置只返回 `api_key_configured`。密钥仅在调用时用于鉴权头，兼容已有环境变量引用。
+自定义 API 密钥由设置页密码框输入，后台通过 SQLite 事务与连接设置一起保存到独立 `credential` 记录；公开设置只返回 `api_key_configured`。Grok OAuth 令牌同样写入 `credential`，公开设置只返回 `oauth_configured`。密钥和令牌仅在调用时用于鉴权头，自定义通道仍兼容已有环境变量引用。

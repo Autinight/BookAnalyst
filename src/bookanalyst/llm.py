@@ -7,12 +7,14 @@ import os
 import re
 import shutil
 import subprocess
+import time
 import tomllib
 from pathlib import Path
 
 import httpx
 from jsonschema import validate, ValidationError
 from .config import secret
+from . import grok_oauth
 from .store import WorkflowError, atomic_json, digest, encode, write_async
 
 REQUEST_ATTEMPTS = 5
@@ -83,6 +85,9 @@ class Providers:
         self.runtime = None
         self.sdk_lock = asyncio.Lock()
         self.http_clients = {}
+        self.grok_lock = asyncio.Lock()
+        self._grok_login_session = None
+        self._grok_login_task = None
 
     async def codex(self):
         async with self.sdk_lock:
@@ -155,6 +160,7 @@ class Providers:
             return self.agent_sdk
 
     async def close(self):
+        await self._cancel_grok_login()
         await asyncio.gather(*(sdk.close() for sdk in (self.sdk, self.agent_sdk) if sdk))
         clients = await asyncio.gather(*self.http_clients.values(), return_exceptions=True)
         self.http_clients.clear()
@@ -221,6 +227,8 @@ class Providers:
                     "models": [],
                     "message": "官方运行时状态读取失败；请检查 SDK 与登录状态",
                 }
+        if conn["kind"] == "grok_oauth":
+            return await self._grok_status(connection_id, conn)
         ready = conn["auth_mode"] == "none" or bool(self.api_key(connection_id, conn))
         return {
             "status": "CONFIGURED_UNTESTED" if ready else "AUTH_REQUIRED",
@@ -236,9 +244,10 @@ class Providers:
         }
 
     def _custom_headers(self, connection_id, conn):
-        if conn["auth_mode"] != "bearer":
+        if conn.get("auth_mode") != "bearer":
             return {}
-        return {"Authorization": "Bearer " + self.api_key(connection_id, conn)}
+        token = conn.get("_access_token") or self.api_key(connection_id, conn)
+        return {"Authorization": "Bearer " + token}
 
     def _http_status(self, response):
         if response.status_code in (401, 403):
@@ -294,7 +303,7 @@ class Providers:
         conn = settings["connections"].get(connection_id)
         if not conn:
             raise WorkflowError("CONFIG_REQUIRED", "模型连接不存在", 422)
-        if conn["kind"] == "codex_chatgpt":
+        if conn["kind"] in ("codex_chatgpt", "grok_oauth"):
             return await self.status(connection_id)
         if conn["kind"] != "openai_compatible":
             raise WorkflowError("INVALID_CHANNEL", "此连接不支持检查", 422)
@@ -380,10 +389,140 @@ class Providers:
             }
 
     async def login(self, connection_id):
-        if self.connection(connection_id)["kind"] != "codex_chatgpt":
+        kind = self.connection(connection_id)["kind"]
+        if kind == "grok_oauth":
+            return await self._grok_login(connection_id)
+        if kind != "codex_chatgpt":
             raise WorkflowError("INVALID_CHANNEL", "此连接使用 API 配置", 422)
         handle = await (await self.codex()).login_chatgpt()
         return {"auth_url": handle.auth_url, "login_id": handle.login_id}
+
+    def grok_credential(self, connection_id):
+        try:
+            return self.store.get("credential", connection_id)
+        except WorkflowError as e:
+            if e.code != "NOT_FOUND":
+                raise
+            return None
+
+    def grok_configured(self, connection_id):
+        cred = self.grok_credential(connection_id)
+        return bool(isinstance(cred, dict) and cred.get("access_token"))
+
+    async def ensure_grok_access(self, connection_id):
+        async with self.grok_lock:
+            cred = self.grok_credential(connection_id) or {}
+            token = cred.get("access_token") if isinstance(cred.get("access_token"), str) else ""
+            refresh = cred.get("refresh_token") if isinstance(cred.get("refresh_token"), str) else ""
+            expires_at = cred.get("expires_at")
+            if token and isinstance(expires_at, (int, float)) and time.time() < expires_at:
+                return token
+            if refresh:
+                return (await self._refresh_grok(connection_id, cred))["access_token"]
+            if token:
+                return token
+            raise WorkflowError("AUTH_REQUIRED", "请在设置页完成 Grok 登录", 422)
+
+    async def _refresh_grok(self, connection_id, cred):
+        async with httpx.AsyncClient(timeout=30, transport=self.transport) as client:
+            response = await grok_oauth.refresh_tokens(client, cred["refresh_token"])
+        if response.status_code in (401, 403):
+            raise WorkflowError("AUTH_REQUIRED", "Grok 登录已过期，请重新登录", 422)
+        tokens = grok_oauth.credentials_from_response(
+            response, cred.get("refresh_token") or ""
+        )
+        self.store.put("credential", connection_id, tokens)
+        return tokens
+
+    async def grok_http_conn(self, connection_id, conn):
+        token = await self.ensure_grok_access(connection_id)
+        return grok_oauth.http_connection(conn, token)
+
+    async def _grok_status(self, connection_id, conn):
+        try:
+            token = await self.ensure_grok_access(connection_id)
+        except WorkflowError as exc:
+            if exc.code == "AUTH_REQUIRED":
+                return {"status": "AUTH_REQUIRED", "models": [], "message": exc.message}
+            return {"status": "REQUEST_FAILED", "models": [], "message": exc.message}
+        timeout = min(30, conn["timeout_seconds"])
+        try:
+            async with httpx.AsyncClient(timeout=timeout, transport=self.transport) as client:
+                listed = await client.get(
+                    grok_oauth.API_BASE + "/models",
+                    headers={
+                        "Authorization": "Bearer " + token,
+                        "Accept": "application/json",
+                    },
+                )
+        except httpx.TimeoutException:
+            return {"status": "REQUEST_FAILED", "models": [], "message": "Grok 模型列表读取超时"}
+        except httpx.RequestError:
+            return {"status": "REQUEST_FAILED", "models": [], "message": "无法连接 Grok 模型服务"}
+        code, message = self._http_status(listed)
+        if code:
+            if code == "AUTH_REQUIRED":
+                message = "Grok 登录无效或订阅无权使用 API，请重新登录"
+            return {"status": code, "models": [], "message": message}
+        try:
+            models = grok_oauth.chat_models(listed.json())
+        except ValueError:
+            models = []
+        if not models:
+            return {
+                "status": "MODEL_UNAVAILABLE",
+                "models": [],
+                "message": "Grok 账户未返回可用对话模型",
+            }
+        return {"status": "READY", "models": models, "message": "连接正常"}
+
+    async def _cancel_grok_login(self):
+        session, task = self._grok_login_session, self._grok_login_task
+        self._grok_login_session = None
+        self._grok_login_task = None
+        if session is not None:
+            await session.close()
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                pass
+
+    async def _complete_grok_login(self, connection_id, session):
+        try:
+            code = await session.wait_code()
+            async with httpx.AsyncClient(timeout=30, transport=self.transport) as client:
+                response = await grok_oauth.exchange_code(
+                    client, code, session.verifier
+                )
+            tokens = grok_oauth.credentials_from_response(response)
+            self.store.put("credential", connection_id, tokens)
+        finally:
+            await session.close()
+            if self._grok_login_session is session:
+                self._grok_login_session = None
+                self._grok_login_task = None
+
+    async def _grok_login(self, connection_id):
+        await self._cancel_grok_login()
+        session = grok_oauth.LoopbackLogin()
+        await session.start()
+        self._grok_login_session = session
+        self._grok_login_task = asyncio.create_task(
+            self._complete_grok_login(connection_id, session),
+            name=f"grok-oauth-{connection_id}",
+        )
+        self._grok_login_task.add_done_callback(
+            lambda done: None if done.cancelled() else done.exception()
+        )
+        return {
+            "auth_url": session.auth_url,
+            "login_id": session.state,
+            "message": "在浏览器完成授权；页面可能显示 Grok Build。完成后关闭该页并检查连接。",
+        }
 
     async def resolve(self, binding, require_image=False):
         conn = self.connection(binding["connection_id"])
@@ -418,6 +557,26 @@ class Providers:
             if supported and binding.get("reasoning_effort", "medium") not in supported:
                 raise WorkflowError(
                     "EFFORT_UNSUPPORTED", "上游模型不支持所选思考强度", 422
+                )
+            model_id = selected.get("model") or selected["id"]
+        elif conn["kind"] == "grok_oauth":
+            state = await self.status(binding["connection_id"])
+            if state["status"] != "READY":
+                raise WorkflowError(
+                    state["status"],
+                    state.get("message") or "请在设置页完成 Grok 登录",
+                    422,
+                )
+            selected = grok_oauth.select_model(state["models"], model_id)
+            if not selected:
+                raise WorkflowError(
+                    "MODEL_UNAVAILABLE",
+                    "账户未返回所选模型，请在设置页选择可用模型",
+                    422,
+                )
+            if require_image and "image" not in selected.get("inputModalities", []):
+                raise WorkflowError(
+                    "CAPABILITY_UNSUPPORTED", "所选 Grok 模型不支持图像输入", 422
                 )
             model_id = selected.get("model") or selected["id"]
         else:
@@ -511,9 +670,20 @@ class Providers:
                                 images,
                                 directory / "upstream.json",
                             )
-                        else:
+                        elif conn["kind"] == "grok_oauth":
+                            http_conn = await self.grok_http_conn(
+                                binding["connection_id"], conn
+                            )
+                            text, usage = await self._custom(
+                                http_conn, binding, prompt, schema, images
+                            )
+                        elif conn["kind"] == "openai_compatible":
                             text, usage = await self._custom(
                                 conn, binding, prompt, schema, images
+                            )
+                        else:
+                            raise WorkflowError(
+                                "INVALID_CHANNEL", "此连接不支持模型请求", 422
                             )
                     await write_async(
                         atomic_json, directory / "response.json",

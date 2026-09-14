@@ -1,9 +1,10 @@
 import { escape as e } from "./api.js";
 
-export const connectionName = (id, conn) => conn.name || (conn.kind === "codex_chatgpt" ? "ChatGPT 官方订阅" : id === "custom_api" ? "自定义 API / vLLM" : id);
+export const connectionName = (id, conn) => conn.name || (conn.kind === "codex_chatgpt" ? "ChatGPT 官方订阅" : conn.kind === "grok_oauth" ? "Grok 官方订阅" : id === "custom_api" ? "自定义 API / vLLM" : id);
 
 export function connectionCard(id, conn, unsaved = false) {
   const custom = conn.kind === "openai_compatible";
+  const grok = conn.kind === "grok_oauth";
   const input = (field, label, type = "text", attrs = "") => `<label>${label}<input name="${e(id)}_${field}" data-connection-field="${field}" type="${type}" value="${e(field === "name" ? connectionName(id, conn) : conn[field] ?? "")}" ${attrs}></label>`;
   const select = (field, label, choices) => `<label>${label}<select name="${e(id)}_${field}" data-connection-field="${field}">${choices.map(([value, title]) => `<option value="${value}"${conn[field] === value ? " selected" : ""}>${title}</option>`).join("")}</select></label>`;
   return `<section class="card" data-connection-id="${e(id)}">
@@ -18,6 +19,8 @@ export function connectionCard(id, conn, unsaved = false) {
       ${conn.api_key_configured ? '<label class="check"><input type="checkbox" data-connection-field="clear_api_key">清除已保存密钥</label>' : ""}
       ${select("image_support", "图像支持", [["unknown", "待确认"], ["supported", "已确认支持"], ["unsupported", "不支持"]])}`
       : input("model_id", "默认模型", "text", 'placeholder="使用上游默认模型"')}
+    ${grok ? '<p class="hint">使用 SuperGrok 或 X Premium+ 账户登录。授权页可能显示 Grok Build。</p>' : ""}
+    ${grok && conn.oauth_configured ? '<p class="hint">已保存 Grok 登录令牌。检查连接可验证是否仍有效。</p>' : ""}
     <div class="fields">${conn.max_in_flight !== undefined ? input("max_in_flight", "连接并发", "number", 'min="1" required') : ""}${input("timeout_seconds", "请求等待（秒）", "number", 'min="1" max="3600" required')}</div>
     <div class="row"><button type="button" data-connection-check ${unsaved ? "disabled" : ""}>检查连接</button>${custom ? "" : '<button type="button" data-connection-login>登录</button>'}</div>
     <p class="hint" data-connection-status>${unsaved ? "保存设置后可检查连接。" : "检查使用已保存的设置。"}</p>

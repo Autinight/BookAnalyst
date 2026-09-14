@@ -1,6 +1,6 @@
 # LLM 供应商配置 v0.7
 
-更新：2026-09-07。供应商配置独立于 PDF → TeX 工作流，仅管理连接、鉴权、默认模型与调用参数。当前已实现官方订阅和自定义 API 适配器。
+更新：2026-09-14。供应商配置独立于 PDF → TeX 工作流，仅管理连接、鉴权、默认模型与调用参数。当前已实现 ChatGPT 官方订阅、Grok 官方订阅和自定义 API 适配器。
 
 ## 优先渠道：ChatGPT 官方订阅
 
@@ -17,6 +17,16 @@
 转换、衔接和结构化处理每次生成使用新的只读持久会话，保存上游 thread / turn 标识，传递任务文本、必要图像与输出 JSON Schema。最终编译修复使用独立的完整 Codex 运行时，持续使用同一个 thread，开启原生文件与命令工具，并使用运行时自动压缩；不再经过 JSON 输出适配器或十次请求限制。自定义 API 的最终编译由 pi.dev SDK 接入相同连接配置，使用持续 Pi 会话与原生工具；官方订阅继续使用 Codex SDK，不自动切换渠道。
 
 前面结构化 worker 不配置上下文容量或输出 token 上限；请求规模由每批页数控制。官方订阅沿用运行时行为，结构化自定义 API worker 不发送 `max_tokens` 或 `max_output_tokens`。Pi 编译 Agent 使用其模型容量管理输出与压缩，未知模型默认 128000 上下文、16384 单次输出，并在 `pi-compiler.json` 记录。上游模型和部署自身的限制仍然适用；旧运行配置中的容量字段不再参与请求判断。
+
+## Grok 官方订阅
+
+使用 SuperGrok 或 X Premium+ 账户的浏览器 OAuth，不接收 xAI 密码，也不把访问令牌回显到设置接口。登录复用 Grok CLI 的公开 OAuth client（PKCE，无 client secret），因为 xAI 只接受已登记客户端的回环回调。授权页可能显示 “Grok Build” / “Grok CLI”。
+
+在设置页点击“登录”，打开 `auth.x.ai` 授权链接。本机在 `http://127.0.0.1:56121/callback` 接收授权码并换取令牌；若该端口被占用，先关闭占用程序再重新登录。登录完成后点击“检查连接”，从 `https://api.x.ai/v1/models` 读取可用对话模型。令牌保存在本地 SQLite 的独立 `credential` 记录中，过期时自动刷新；公开设置只返回 `oauth_configured`。
+
+结构化请求走 OpenAI 兼容的 Chat Completions，收尾编译走 pi.dev SDK，与自定义 API 相同，不使用 Codex。图像能力按上游模型列表声明；图像生成类 `grok-imagine-*` 不会进入对话模型列表。部分订阅档在登录成功后仍可能对 API 返回 403，此时改用自定义 API 并填写 `XAI` 密钥。
+
+旧安装升级后会自动补上该连接，不会覆盖已有 ChatGPT 或自定义供应商。
 
 ## 自定义 API
 
@@ -56,6 +66,13 @@
       "model_id": "",
       "timeout_seconds": 600
     },
+    "grok_subscription": {
+      "kind": "grok_oauth",
+      "enabled": true,
+      "model_id": "",
+      "timeout_seconds": 600,
+      "oauth_configured": false
+    },
     "custom_api": {
       "kind": "openai_compatible",
       "enabled": false,
@@ -71,7 +88,7 @@
 }
 ```
 
-这是 v0.7 设置接口的公开返回对象。`api_key_configured` 只表示凭据存在，不表示已向上游验证。保存时可向自定义连接提交只写字段 `api_key` 或 `clear_api_key`；两者不写入普通设置。旧 MinerU 设置保留为历史配置，不进入当前接口。当前 UI 编辑上述两个连接；后端可保存其他具名连接。连接中的默认模型与运行中的角色绑定分开保存。
+这是 v0.7 设置接口的公开返回对象。`api_key_configured` 只表示自定义凭据存在，`oauth_configured` 只表示已保存 Grok 令牌，都不表示已向上游验证。保存时可向自定义连接提交只写字段 `api_key` 或 `clear_api_key`；两者不写入普通设置。旧 MinerU 设置保留为历史配置，不进入当前接口。当前 UI 编辑内置连接与用户添加的 API 连接。连接中的默认模型与运行中的角色绑定分开保存。
 
 ## 调用约束与验证状态
 

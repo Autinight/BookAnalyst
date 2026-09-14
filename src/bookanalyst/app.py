@@ -9,7 +9,7 @@ from fastapi import FastAPI, Request, UploadFile, File, Query
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
-from .config import DEFAULT_SETTINGS, prepare_settings
+from .config import DEFAULT_SETTINGS, prepare_settings, ensure_builtin_connections
 from .store import Store, WorkflowError
 from .models import RunCreate, Operation, StartOperation, RunModelUpdate, STAGES, STAGE_NAMES, WORKFLOW_VERSION
 from .llm import Providers
@@ -35,6 +35,8 @@ def create_app(workspace=None, data_dir=None):
     except WorkflowError:
         store.put("settings", "main", copy.deepcopy(DEFAULT_SETTINGS))
     saved = store.get("settings", "main")
+    if ensure_builtin_connections(saved):
+        store.put("settings", "main", saved)
     if not saved.get("stage_models"):
         recent = next((r["config"] for r in store.list("run") if r.get("workflow_version") == WORKFLOW_VERSION), None)
         saved["stage_models"] = settings_models(saved, recent)
@@ -134,6 +136,8 @@ def create_app(workspace=None, data_dir=None):
             if conn["kind"] == "openai_compatible":
                 conn["api_key_configured"] = bool(providers.api_key(name, conn))
                 conn.pop("api_key_env", None)
+            elif conn["kind"] == "grok_oauth":
+                conn["oauth_configured"] = providers.grok_configured(name)
         return value
 
     @app.get("/api/settings")

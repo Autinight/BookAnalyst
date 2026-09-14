@@ -24,6 +24,13 @@ DEFAULT_SETTINGS = {
             "model_id": "",
             "timeout_seconds": 600,
         },
+        "grok_subscription": {
+            "name": "Grok 官方订阅",
+            "kind": "grok_oauth",
+            "enabled": True,
+            "model_id": "",
+            "timeout_seconds": 600,
+        },
         "custom_api": {
             "name": "自定义 API / vLLM",
             "kind": "openai_compatible",
@@ -37,6 +44,32 @@ DEFAULT_SETTINGS = {
         },
     },
 }
+
+CONNECTION_TEMPLATES = {
+    "codex_chatgpt": "openai_subscription",
+    "grok_oauth": "grok_subscription",
+    "openai_compatible": "custom_api",
+}
+
+
+def connection_allowed_fields(kind):
+    template = CONNECTION_TEMPLATES.get(kind)
+    if template is None:
+        return None
+    allowed = set(DEFAULT_SETTINGS["connections"][template])
+    if kind == "openai_compatible":
+        allowed.add("api_key_env")
+    return allowed
+
+
+def ensure_builtin_connections(settings):
+    connections = settings.setdefault("connections", {})
+    changed = False
+    for cid, conn in DEFAULT_SETTINGS["connections"].items():
+        if cid not in connections:
+            connections[cid] = copy.deepcopy(conn)
+            changed = True
+    return changed
 
 
 def secret(root, name):
@@ -76,12 +109,8 @@ def validate_settings(value):
             if not isinstance(display_name, str) or not display_name.strip() or len(display_name.strip()) > 100:
                 raise WorkflowError("INVALID_CONFIG", "供应商名称须为 1–100 个字符", 422)
             conn["name"] = display_name.strip()
-        allowed = set(
-            DEFAULT_SETTINGS["connections"][
-                "openai_subscription" if kind == "codex_chatgpt" else "custom_api"
-            ]
-        ) | ({"api_key_env"} if kind == "openai_compatible" else set())
-        if kind not in ("codex_chatgpt", "openai_compatible") or set(conn) - allowed:
+        allowed = connection_allowed_fields(kind)
+        if allowed is None or set(conn) - allowed:
             raise WorkflowError("INVALID_CONFIG", "连接字段无效", 422)
         if (
             not isinstance(conn.get("timeout_seconds"), int)
@@ -132,8 +161,10 @@ def prepare_settings(value, previous):
     elif isinstance(value["stage_models"], dict) and "image_repair" not in value["stage_models"]:
         # A still-open old settings form must not overwrite the new selection.
         value["stage_models"]["image_repair"] = settings_models(previous)["image_repair"]
+    ensure_builtin_connections(value)
     credentials = {}
     for name, conn in value.get("connections", {}).items():
+        conn.pop("oauth_configured", None)
         if conn.get("kind") != "openai_compatible":
             continue
         key = conn.pop("api_key", "")
