@@ -206,6 +206,25 @@ async def test_orphan_end_is_an_explicit_todo(app, monkeypatch):
     assert joined[0]["pages"][0]["tex"] == "Text."
 
 
+def test_display_math_delimiters_are_first_class_environment_tokens():
+    from bookanalyst.seam_environments import apply_edits, verify
+
+    pages = [{"page": 1, "tex": "\\[\nx"}, {"page": 2, "tex": "y\n\\]"}]
+    scan = scan_environments(pages)
+    opened = scan["opened"]["env-1-1"]
+    assert opened["name"] == "displaymath" and opened["end"] == {"page": 2, "line": 2}
+    assert not scan["unclosed"] and not scan["unmatched"]
+
+    orphan = [{"page": 1, "tex": "Text.\n\\]"}]
+    node = scan_environments(orphan)["unmatched"][0] | {"kind": "unmatched_end"}
+    assert node["name"] == "displaymath"
+    fixed = action(edits=[{"page": 1, "old": r"\]", "new": ""}], resolved=True,
+                   closing_page=None, note="Remove the stray display closer.")
+    updated = apply_edits(orphan, fixed["edits"], {1})
+    verify(node, orphan, updated, fixed, {1})
+    assert updated[0]["tex"] == "Text.\n"
+
+
 @pytest.mark.asyncio
 async def test_inflight_completed_fix_survives_another_worker_failure_and_prior_commit(app, monkeypatch):
     engine, run = app.state.engine, make_run(app, llm_concurrency=3)
@@ -467,3 +486,182 @@ async def test_completed_worker_is_waiting_while_earlier_worker_is_active(app, m
     monkeypatch.setattr(engine.providers, "generate", generate)
     await resolve_environments(engine, run, source)
     assert all(t["state"] == "PASSED" for t in engine.store.tasks(run["id"], "seams"))
+
+
+def test_page_215_end_follows_inserted_equation_closer():
+    from bookanalyst.seam_environments import apply_edits, rebase_node, verify
+
+    pages = [{"page": 214, "tex": "\\begin{theorem}\nStatement.\n\\begin{equation}\nx=1"},
+             {"page": 215, "tex": "continues.\n\\begin{equation*}\ny=2\n\\end{equation*}\nDone.\n\\end{theorem}"}]
+    node = scan_environments(pages)["unmatched"][0] | {"kind": "unmatched_end"}
+    assert node["line"] == 6
+    edits = [{"page": 215, "old": r"\begin{equation*}", "new": "\\end{equation}\n\\begin{equation*}"}]
+    updated = apply_edits(pages, edits, {214, 215})
+    moved = rebase_node(node, pages, edits)
+    assert moved["id"] == node["id"] and moved["line"] == moved["begin_line"] == 7
+    verify(moved, updated, updated, action(resolved=True, closing_page=215), {214, 215})
+
+
+@pytest.mark.parametrize("closing_page", [None, 1])
+def test_same_line_same_name_end_cannot_resolve_a_different_target(closing_page):
+    from bookanalyst.seam_environments import apply_edits, verify
+
+    pages = [{"page": 1, "tex": r"\begin{proof}Paired.\end{proof}A.\end{proof}B.\end{proof}"}]
+    node = scan_environments(pages)["unmatched"][1] | {"kind": "unmatched_end"}
+    wrong = action(edits=[{"page": 1, "old": r"A.\end{proof}", "new": "A."}],
+                   resolved=True, closing_page=closing_page)
+    with pytest.raises(WorkflowError, match="仍没有可配对"):
+        verify(node, pages, apply_edits(pages, wrong["edits"], {1}), wrong, {1})
+    correct = action(edits=[{"page": 1, "old": r"B.\end{proof}", "new": "B."}], resolved=True)
+    verify(node, pages, apply_edits(pages, correct["edits"], {1}), correct, {1})
+
+
+def test_indistinguishable_duplicate_end_patch_does_not_guess_target():
+    from bookanalyst.seam_environments import apply_edits, verify
+
+    pages = [{"page": 1, "tex": r"Text.\end{proof}\end{proof}"}]
+    node = scan_environments(pages)["unmatched"][1] | {"kind": "unmatched_end"}
+    fixed = action(edits=[{"page": 1, "old": r"\end{proof}\end{proof}", "new": r"\end{proof}"}],
+                   resolved=True)
+    with pytest.raises(WorkflowError) as error:
+        verify(node, pages, apply_edits(pages, fixed["edits"], {1}), fixed, {1})
+    assert error.value.code == "SEAM_TARGET_AMBIGUOUS"
+
+
+def test_inserted_begin_changes_scan_ordinal_not_task_identity():
+    from bookanalyst.seam_environments import apply_edits, rebase_node, target_pair, verify
+
+    pages = [{"page": 1, "tex": "Intro.\n\\begin{proof}Actual proof."}, {"page": 2, "tex": "Done."}]
+    node = scan_environments(pages)["opened"]["env-1-1"] | {"kind": "unclosed"}
+    fixed = action(edits=[{"page": 1, "old": "Intro.", "new": r"\begin{proof}Intro.\end{proof}"},
+                          {"page": 2, "old": "Done.", "new": r"Done.\end{proof}"}],
+                   resolved=True, closing_page=2)
+    updated = apply_edits(pages, fixed["edits"], {1, 2})
+    moved = rebase_node(node, pages, fixed["edits"])
+    assert moved["id"] == "env-1-1"
+    assert target_pair(moved, scan_environments(updated))["id"] == "env-1-2"
+    verify(node, pages, updated, fixed, {1, 2})
+    with pytest.raises(WorkflowError, match="匹配"):
+        verify(node, pages, updated, fixed | {"closing_page": 1}, {1, 2})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("resume,legacy_checkpoint", [(False, False), (True, False), (True, True)])
+async def test_shifted_end_merges_and_resumes_without_reasking_completed_worker(app, monkeypatch, resume, legacy_checkpoint):
+    engine, run = app.state.engine, make_run(app, llm_concurrency=4)
+    source = batches("\\begin{theorem}\nStatement.\n\\begin{equation}\nx=1",
+                     "continues.\n\\begin{equation*}\ny=2\n\\end{equation*}\nDone.\n\\end{theorem}")
+    if resume:
+        source += batches("unused", "unused", r"\begin{lemma}Later.", "Ends.")[2:]
+    calls = []
+    pause = resume
+    completed_end = asyncio.Event()
+
+    async def generate(run, role, purpose, prompt, schema, images=()):
+        payload = json.loads(prompt)
+        node = payload["todo"]
+        calls.append(node["id"])
+        if node["name"] == "lemma":
+            await asyncio.wait_for(completed_end.wait(), 2)
+            if pause:
+                raise WorkflowError("PAUSED", "Pause after the equation merge")
+            return action(edits=[{"page": 4, "old": "Ends.", "new": r"Ends.\end{lemma}"}],
+                          resolved=True, closing_page=4)
+        if node["name"] == "equation":
+            return action(edits=[{"page": 2, "old": r"\begin{equation*}",
+                                  "new": "\\end{equation}\n\\begin{equation*}"}],
+                          resolved=True, closing_page=2)
+        if node["kind"] == "unmatched_end":
+            assert node["line"] == 6
+            completed_end.set()
+        return action(resolved=True, closing_page=2)
+
+    monkeypatch.setattr(engine.providers, "generate", generate)
+    base = engine.store.directory(run["id"])
+    if resume:
+        with pytest.raises(WorkflowError, match="Pause after"):
+            await resolve_environments(engine, run, source)
+        saved = json.loads((base / "seam-environments-progress.json").read_text())
+        end = next(node for node in saved["obligations"] if node["id"] == "end-2-1")
+        assert end["line"] == 7
+        if legacy_checkpoint:
+            saved.pop("obligations")
+            atomic_json(base / "seam-environments-progress.json", saved)
+        pause = False
+    joined = await resolve_environments(engine, run, source)
+    assert calls.count("end-2-1") == 1
+    assert len(calls) == (5 if resume else 3)
+    saved = json.loads((base / "seam-environments-progress.json").read_text())
+    notes = {note["id"]: note for note in saved["resolutions"]}
+    assert notes["end-2-1"]["todo"]["line"] == 7
+    assert notes["env-1-1"]["closing_location"] == {"page": 2, "line": 7}
+    assert not scan_environments([p for batch in joined for p in batch["pages"]])["unclosed"]
+    assert await resolve_environments(engine, run, source) == joined
+    assert len(calls) == (5 if resume else 3)
+
+
+@pytest.mark.asyncio
+async def test_worker_local_edits_update_next_prompt_and_survive_resume(app, monkeypatch):
+    engine, run = app.state.engine, make_run(app)
+    source = batches("\\begin{proof}\nText.", "Continues.", "Done.")
+    calls = []
+    pause = True
+
+    async def generate(run, role, purpose, prompt, schema, images=()):
+        payload = json.loads(prompt)
+        calls.append(payload)
+        if payload["tool_round"] == 0:
+            return action(edits=[{"page": 1, "old": r"\begin{proof}", "new": "\n\\begin{proof}"}],
+                          read_pages=[3])
+        assert payload["todo"]["begin_line"] == 2
+        if payload["tool_round"] == 1:
+            return action(edits=[{"page": 3, "old": "Done.", "new": r"Done.\end{proof}"}], read_pages=[3])
+        if pause:
+            raise WorkflowError("PAUSED", "Pause before confirmation")
+        return action(resolved=True, closing_page=3)
+
+    monkeypatch.setattr(engine.providers, "generate", generate)
+    with pytest.raises(WorkflowError, match="Pause before"):
+        await resolve_environments(engine, run, source)
+    pause = False
+    joined = await resolve_environments(engine, run, source)
+    assert len(calls) == 4
+    assert joined[0]["pages"][0]["tex"].startswith("\n\\begin{proof}")
+    assert joined[2]["pages"][0]["tex"] == r"Done.\end{proof}"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("conflict", [False, True])
+async def test_pending_opener_keeps_id_after_prior_insertion_and_refreshes_on_conflict(app, monkeypatch, conflict):
+    engine, run = app.state.engine, make_run(app, llm_concurrency=2)
+    source = batches("\\begin{proof}Outer.\nIntro.\n\\begin{lemma}Statement.", "Done.")
+    calls = []
+
+    async def generate(run, role, purpose, prompt, schema, images=()):
+        node = json.loads(prompt)["todo"]
+        calls.append(node["id"])
+        if node["name"] == "proof":
+            return action(edits=[{"page": 1, "old": "Intro.", "new": "\\begin{proof}\nIntro.\n\\end{proof}"},
+                                 {"page": 2, "old": "Done.", "new": r"Done.\end{proof}"}],
+                          resolved=True, closing_page=2)
+        assert node["id"] == "env-1-2"
+        retried = calls.count(node["id"]) == 2
+        assert node["begin_line"] == (5 if retried else 3)
+        edits = [{"page": 2, "old": "Done.", "new": r"Done.\end{lemma}"}]
+        if conflict and not retried:
+            edits.insert(0, {"page": 1, "old": "\nIntro.\n\\begin{lemma}",
+                            "new": "\n\nIntro.\n\\begin{lemma}"})
+        return action(edits=edits, resolved=True, closing_page=2)
+
+    monkeypatch.setattr(engine.providers, "generate", generate)
+    joined = await resolve_environments(engine, run, source)
+    assert len(calls) == (3 if conflict else 2)
+    base = engine.store.directory(run["id"])
+    saved = json.loads((base / "seam-environments-progress.json").read_text())
+    lemma = next(node for node in saved["obligations"] if node["name"] == "lemma")
+    assert lemma["id"] == "env-1-2" and lemma["begin_line"] == 5
+    report = json.loads((base / "seam-environment-todos.json").read_text())
+    lemma_item = next(item for item in report["items"] if item["name"] == "lemma")
+    assert lemma_item["id"] == "env-1-2" and lemma_item["status"] == "resolved"
+    assert await resolve_environments(engine, run, source) == joined
+    assert len(calls) == (3 if conflict else 2)

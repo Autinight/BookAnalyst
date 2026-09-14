@@ -141,6 +141,12 @@ function updateStatus() {
   $("#pause").hidden = run.legacy || run.state !== "RUNNING";
   $("#result-pdf").hidden = !run.legacy && run.state !== "COMPLETED";
   $("#retain-result").hidden = run.state !== "COMPLETED";
+  const saved = data.books.find(b => b.id === run.book_id)?.result?.run_id === run.id && !run.retention_error;
+  $("#retain-result").textContent = saved ? "已保存到书库" : "保存到书库";
+  $("#retain-result").disabled = saved;
+  $("#result-save-note").textContent = saved
+    ? "这份结果已保存为书籍当前版本，旧版文件保留。"
+    : "结果只保留在任务中，不自动更新书库。编译完成后可预览，再点击“保存到书库”设为书籍当前版本；旧版文件保留。";
   const displayError = run.error || run.retention_error;
   $("#run-message").hidden = !displayError;
   $("#run-message").textContent = displayError
@@ -317,14 +323,21 @@ document.addEventListener("click", async (event) => {
       return;
     }
     if (button.id === "retain-result") {
+      const id = run.id, version = routeVersion;
       button.disabled = true;
       try {
-        await api(`/api/runs/${run.id}/retain`, { method: "POST", body: {} });
+        await api(`/api/runs/${id}/retain`, { method: "POST", body: {} });
         await bootstrap();
-        run = await api(`/api/runs/${run.id}/status`);
+        if (version !== routeVersion) return;
+        const current = await api(`/api/runs/${id}/status`);
+        if (version !== routeVersion) return;
+        run = current;
         updateStatus();
-        toast("已保留到书库，默认 PDF 已更新");
-      } finally { button.disabled = false; }
+        toast("已保存到书库，书籍当前版本已更新，旧版文件保留");
+      } finally {
+        button.disabled = false;
+        if (version === routeVersion && run?.id === id) updateStatus();
+      }
       return;
     }
     if (button.dataset.run) return await navigate("run", button.dataset.run);

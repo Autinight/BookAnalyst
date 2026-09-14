@@ -104,7 +104,7 @@ def test_apply_is_isolated_idempotent_and_uses_immutable_template_snapshot(app,m
 
 
 @pytest.mark.asyncio
-async def test_template_agent_runs_even_when_original_compiles_and_success_is_retained(app,monkeypatch):
+async def test_template_agent_runs_and_waits_for_manual_save(app,monkeypatch):
     run,_,_=job(app);engine=app.state.engine;store=app.state.store;calls=[]
     before=store.get('book',BOOK)['retained_result'];base=store.directory(run['id'])
     body=(base/'tex/body.tex').read_bytes()
@@ -120,6 +120,13 @@ async def test_template_agent_runs_even_when_original_compiles_and_success_is_re
     result=store.get('run',run['id'])
     assert result['state']=='COMPLETED',result.get('error')
     assert len(calls)==1 and (base/'tex/body.tex').read_bytes()==body
+    assert store.get('book',BOOK)['retained_result']==before
+    assert (base/'tex/main.pdf').exists()
+    with TestClient(app) as client:
+        auth=headers(client)
+        response=client.post(f"/api/runs/{run['id']}/retain",headers=auth)
+        assert response.status_code==200,response.text
+        assert client.post(f"/api/runs/{run['id']}/retain",headers=auth).json()==response.json()
     after=store.get('book',BOOK)['retained_result']
     assert after['run_id']==run['id'] and after['id']!=before['id']
     assert (base/'template-applied.json').exists()

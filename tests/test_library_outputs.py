@@ -121,23 +121,42 @@ def test_modified_project_is_not_retained_as_compiled(app):
 
 
 @pytest.mark.asyncio
-async def test_execute_retains_success_automatically_and_reports_only_storage_failure(app, monkeypatch):
+async def test_conversion_completion_waits_for_explicit_save(app, monkeypatch):
     engine, store = app.state.engine, app.state.store
     run, project = completed(app)
     store.change(run["id"], lambda r: r.update(config=r["config"] | {"resolved": True},
-                 stages={s: "PASSED" for s in r["stages"]}, state="PENDING"))
+                 stages={s: "PASSED" if s != "finish" else "PENDING" for s in r["stages"]}, state="PENDING"))
+    compiles = []
     async def compile(*args):
-        pass
+        compiles.append(True)
     monkeypatch.setattr(engine, "compile", compile)
     base = store.directory(run["id"])
     for name, data in (("structured.json", []), ("headings.json", []), ("setup.json", {}), ("symbols.json", {})):
         atomic_json(base / name, data)
     await engine.execute(run["id"])
     assert store.get("run", run["id"])["state"] == "COMPLETED"
+    assert compiles == [True]
+    assert not store.get("book", BOOK).get("retained_result")
+    assert not (book_directory(store, BOOK) / "results").exists()
+    with TestClient(app) as client:
+        assert client.get(f"/api/runs/{run['id']}/pdf").status_code == 200
+        saved = client.post(f"/api/runs/{run['id']}/retain", headers=headers(client))
+        assert saved.status_code == 200, saved.text
     assert store.get("book", BOOK)["retained_result"]["run_id"] == run["id"]
-    def failed(*args):
-        raise OSError("disk unavailable")
-    monkeypatch.setattr("bookanalyst.engine.retain_run", failed)
-    await engine.execute(run["id"])
-    current = store.get("run", run["id"])
-    assert current["state"] == "COMPLETED" and current["retention_error"]["code"] == "RETAIN_FAILED"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["conversion", "image_repair", "template", "manual_layout"])
+async def test_no_task_autosaves_even_on_resume(app, kind):
+    engine, store = app.state.engine, app.state.store
+    original, _ = completed(app)
+    saved = retain_run(store, original["id"])
+    candidate, project = completed(app, "Candidate output")
+    store.change(candidate["id"], lambda r: r.update(kind=kind,
+                 config=r["config"] | {"resolved": True},
+                 stages={s: "PASSED" for s in r["stages"]}, state="PENDING"))
+    for _ in range(2):
+        await engine.execute(candidate["id"])
+        assert store.get("run", candidate["id"])["state"] == "COMPLETED"
+        assert store.get("book", BOOK)["retained_result"] == saved
+        assert (project / "main.pdf").is_file() and (project / "body.tex").read_text() == "Candidate output"

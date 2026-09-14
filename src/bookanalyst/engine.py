@@ -39,7 +39,6 @@ from .reference_repair import ESCALATION_INSTRUCTION, LEGACY_ESCALATION_INSTRUCT
 from .tex import compile_tex
 from .environments import environment_report, seam_obligations
 from .finisher import repair_project
-from .library_outputs import retain_run
 from .model_config import request_run, stage_binding, refresh_pending
 from .concurrency import TaskSlots
 
@@ -531,6 +530,7 @@ class Engine:
             return {
                 "instruction": "Fix ONLY the junction between the left page ending and right page beginning. "
                 "Return exact left_suffix and right_prefix to replace together with replacement TeX. "
+                "Use \\( ... \\) for inline mathematics in replacement TeX, never $...$; copy the source anchors verbatim. "
                 "Preserve author content, all BAHeading/BAFigure markers and native label/ref/eqref commands, and valid open environments. "
                 "unclosed_environments reports what is open at the END of the left batch, not what is missing from the right page. "
                 "Check the right page first. If it already continues and closes the environment correctly and no other junction issue exists, "
@@ -1214,11 +1214,8 @@ class Engine:
                     state = "DEFERRED"
                 self.store.change(rid, lambda r: r["stages"].update({stage: state}))
             self.store.change(rid, lambda r: r.update(state="COMPLETED", error=None))
-            try:
-                await asyncio.to_thread(retain_run, self.store, rid)
-            except (WorkflowError, OSError) as exc:
-                self.store.change(rid, lambda r: r.update(retention_error={
-                    "code": "RETAIN_FAILED", "message": "编译已通过，保留到书库失败；可点击保留按钮重试：" + str(exc)}))
+            # Completed output stays in this task. Only the explicit save endpoint
+            # publishes a result to the library, regardless of task kind.
         except (WorkflowError, asyncio.CancelledError) as e:
             code = getattr(e, "code", "INTERRUPTED")
             message = getattr(e, "message", "执行中断，已完成结果保留")

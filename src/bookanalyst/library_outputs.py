@@ -62,10 +62,8 @@ def retain_run(store, rid):
             raise WorkflowError("NOT_COMPLETE", "只有编译通过的任务可以保留到书库")
         bid = run["source"]["id"]
         book = store.get("book", bid)
-        if (run.get("kind") == "image_repair"
-                and book.get("retained_result", {}).get("id") != run["image_repair"]["source_result_id"]
-                and book.get("retained_result", {}).get("run_id") != rid):
-            raise WorkflowError("STALE_RESULT", "书库已有更新结果；修图 PDF 已保存到任务，未替换书库新版")
+        # Tasks reach this function only on an explicit save. The user
+        # may choose any completed candidate; previous book snapshots remain intact.
         project = output_directory(store, run)
         if not (project / "main.tex").is_file() or not (project / "main.pdf").is_file():
             raise WorkflowError("NO_OUTPUT", "成功任务的 TeX 工程或 PDF 缺失", 404)

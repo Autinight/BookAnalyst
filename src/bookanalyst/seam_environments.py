@@ -4,12 +4,12 @@ import asyncio
 import copy
 import json
 import re
-from collections import Counter
+from difflib import SequenceMatcher
 
 from pydantic import ValidationError
 
 from .documents import SeamEnvironmentAction, safe_body
-from .environments import ENV_TOKEN, environment_report, scan_environments, seam_obligations
+from .environments import ENV_TOKEN, environment_report, environment_token_name, scan_environments, seam_obligations
 from .store import WorkflowError, atomic_json, digest
 
 PROMPT = (
@@ -17,6 +17,7 @@ PROMPT = (
     "An unclosed environment continues from its opening; locate its actual end and insert the missing end there, "
     "before the next proof or statement when appropriate. Remove a duplicate start or premature end if needed. "
     "For an unmatched end, locate the missing opening or remove the erroneous end. "
+    "The synthetic displaymath environment means the literal \\[ and \\] delimiters; keep that syntax when repairing it. "
     "Preserve all content, labels, numbering and other environment types; edit only this environment type and whitespace. "
     "Do not close at a page or batch boundary merely to balance TeX. "
     "read_pages requests pages for the NEXT round, not pages already inspected. "
@@ -73,9 +74,83 @@ def apply_edits(pages, edits, seen):
     return updated
 
 
+def bind_node(node, pages):
+    """Keep the task ID, but locate its particular begin/end token separately."""
+    node = dict(node)
+    if node["kind"] == "unmatched_end":
+        node.setdefault("begin_page", node["page"])
+        node.setdefault("begin_line", node["line"])
+    if "offset" not in node:
+        node["offset"] = node["begin_offset"]
+    if "token" not in node and node["offset"] is not None:
+        page = next(p for p in pages if p["page"] == node["begin_page"])
+        node["token"] = ENV_TOKEN.match(page["tex"], node["offset"]).group()
+    return node
+
+
+def rebase_node(node, pages, edits):
+    """Follow a token through the exact patches; a removed token stays removed."""
+    node = bind_node(node, pages)
+    number = node["begin_page"]
+    text = next(p["tex"] for p in pages if p["page"] == number)
+    for edit in edits:
+        if edit["page"] != number:
+            continue
+        old, new = edit["old"], edit["new"]
+        if not old or text.count(old) != 1:
+            raise WorkflowError("STALE_PATCH", f"第 {number} 页 old 必须唯一匹配；重新读取当前页")
+        left = text.index(old)
+        right = left + len(old)
+        start = node["offset"]
+        if start is not None:
+            end = start + len(node["token"])
+            if start >= right:
+                node["offset"] += len(new) - len(old)
+            elif end > left:
+                # Only inspect the replaced fragment, not the rest of the book.
+                def locate(source, replacement, lo, hi):
+                    for a, b, size in SequenceMatcher(None, source, replacement, autojunk=False).get_matching_blocks():
+                        if a <= lo and hi <= a + size:
+                            return b + lo - a
+                    return None
+
+                moved = locate(old, new, start - left, end - left)
+                reverse = locate(old[::-1], new[::-1], len(old) - (end - left), len(old) - (start - left))
+                reverse = len(new) - reverse - len(node["token"]) if reverse is not None else None
+                if moved != reverse:
+                    raise WorkflowError("SEAM_TARGET_AMBIGUOUS",
+                                        "补丁中有无法区分的重复环境标记；缩小 old/new 范围，明确保留或删除哪个标记")
+                node["offset"] = left + moved if moved is not None else None
+        text = text[:left] + new + text[right:]
+    if node["offset"] is not None:
+        line = text.count("\n", 0, node["offset"]) + 1
+        node["begin_line"] = line
+        if node["kind"] == "unmatched_end":
+            node["line"] = line
+        else:
+            node["begin_offset"] = node["offset"]
+    return node
+
+
+def target_pair(node, scan):
+    """Look up the tracked token, never another same-name token on this page."""
+    if node["offset"] is None:
+        return None
+    for item in scan["opened"].values():
+        if item["name"] != node["name"]:
+            continue
+        if node["kind"] == "unclosed":
+            if (item["begin_page"], item["begin_offset"]) == (node["begin_page"], node["offset"]):
+                return item
+        elif item["end"] and (item["end"]["page"], item["end_offset"]) == (node["page"], node["offset"]):
+            return item
+    return None
+
+
 def unmatched_end_feedback(node, scan):
     position = (node["page"], node["line"])
-    message = f"第 {node['page']} 页第 {node['line']} 行的 \\end{{{node['name']}}} 仍没有可配对的开放 begin。"
+    closing = r"\]" if node["name"] == "displaymath" else f"\\end{{{node['name']}}}"
+    message = f"第 {node['page']} 页第 {node['line']} 行的 {closing} 仍没有可配对的开放 begin。"
     preceding = [item for item in scan["opened"].values()
                  if item["name"] == node["name"] and item["end"]
                  and (item["end"]["page"], item["end"]["line"]) < position]
@@ -90,23 +165,23 @@ def unmatched_end_feedback(node, scan):
     return message + "仅填写 closing_page 或返回空修改不能解决未配对。"
 
 
-def verify(node, before, after, action, seen):
+def verify(node, before, after, action, seen, *, edits=None):
+    node = bind_node(node, before)
+    updated_node = rebase_node(node, before, action["edits"] if edits is None else edits)
     original = scan_environments(before, independent=True)
     changed = scan_environments(after, independent=True)
     # Preserve other workers' environment commands, without judging their nesting.
     others = lambda pages: {
         p["page"]: [token for token in ENV_TOKEN.findall(p["tex"])
-                    if token.partition("{")[2][:-1] != node["name"]]
+                    if environment_token_name(token) != node["name"]]
         for p in pages
     }
     if others(before) != others(after):
         raise WorkflowError("SEAM_ENVIRONMENT_MISMATCH", "只能修改本待办的环境类型；其他环境由对应 worker 处理")
     if node["kind"] == "unclosed":
-        old, new = original["opened"].get(node["id"]), changed["opened"].get(node["id"])
-        if not old or not new or (old["name"], old["begin_page"]) != (new["name"], new["begin_page"]):
+        old, new = target_pair(node, original), target_pair(updated_node, changed)
+        if not old or not new:
             raise WorkflowError("SEAM_OPENING_REMOVED", "不能删除本待办的未闭合起点来消除待办")
-    old_bad = Counter((e["page"], e["name"]) for e in original["unmatched"])
-    new_bad = Counter((e["page"], e["name"]) for e in changed["unmatched"])
     if not action["resolved"]:
         if not action["read_pages"]:
             raise WorkflowError("SEAM_TODO_PENDING", "待办未解决；请修复并报告闭合页，或读取后续页寻找真实结束位置")
@@ -114,24 +189,18 @@ def verify(node, before, after, action, seen):
     if action["read_pages"]:
         raise WorkflowError("SEAM_TODO_PENDING", READ_PAGES_FEEDBACK)
     if node["kind"] == "unclosed":
-        current = changed["opened"].get(node["id"])
+        current = target_pair(updated_node, changed)
         end = current and current["end"]
         if not end or action["closing_page"] != end["page"] or end["page"] not in seen:
             raise WorkflowError("SEAM_TODO_PENDING", "仍未找到与该 begin 匹配的 end；报告实际闭合页并先查看该页")
     else:
         if action["closing_page"] is None:
-            if new_bad[(node["page"], node["name"])] >= old_bad[(node["page"], node["name"])]:
-                raise WorkflowError("SEAM_TODO_PENDING", unmatched_end_feedback(node, changed))
+            if updated_node["offset"] is not None:
+                raise WorkflowError("SEAM_TODO_PENDING", unmatched_end_feedback(updated_node, changed))
         else:
             # An end rejected by cross-type nesting can already match this pair.
-            original_ends = [item for item in original["opened"].values()
-                             if item["name"] == node["name"] and item["end"]
-                             and item["end"] == {"page": node["page"], "line": node["line"]}]
-            existing = any((changed["opened"].get(item["id"], {}).get("end") or {}).get("page") == node["page"]
-                           for item in original_ends)
-            repaired = new_bad[(node["page"], node["name"])] < old_bad[(node["page"], node["name"])]
-            if not (existing or repaired):
-                raise WorkflowError("SEAM_TODO_PENDING", unmatched_end_feedback(node, changed))
+            if not target_pair(updated_node, changed):
+                raise WorkflowError("SEAM_TODO_PENDING", unmatched_end_feedback(updated_node, changed))
             if action["closing_page"] != node["page"]:
                 raise WorkflowError("SEAM_TODO_PENDING",
                                     f"本待办已配对，但 closing_page={action['closing_page']} 不正确，应为 {node['page']}")
@@ -145,9 +214,19 @@ async def resolve_environments(engine, run, results):
     checkpoint = base / "seam-environments-progress.json"
     signature = digest(results)
     saved = load(checkpoint) if checkpoint.exists() else {}
-    journal = saved.get("edits", []) if saved.get("input_hash") == signature else []
-    notes = saved.get("resolutions", []) if saved.get("input_hash") == signature else []
+    if saved.get("input_hash") != signature:
+        saved = {}
+    journal = saved.get("edits", [])
+    notes = saved.get("resolutions", [])
     results = copy.deepcopy(results)
+    original_pages = pages_of(results)
+    # Recover old checkpoints from their input and patch journal. New checkpoints
+    # carry the original IDs and their current token positions explicitly.
+    if "obligations" in saved:
+        obligations = saved["obligations"]
+    else:
+        _, _, obligations = todos(results)
+        obligations = [rebase_node(node, original_pages, journal) for node in obligations]
 
     def set_pages(pages):
         by_page = {p["page"]: p["tex"] for p in pages}
@@ -156,23 +235,25 @@ async def resolve_environments(engine, run, results):
                 page["tex"] = by_page[page["page"]]
 
     if journal:
-        set_pages(apply_edits(pages_of(results), journal, {p["page"] for p in pages_of(results)}))
-
-    # Discover obligations once. Completed pairs must not be reopened by the
-    # full nesting scan while other workers are still fixing their own pairs.
-    _, _, obligations = todos(results)
+        set_pages(apply_edits(original_pages, journal, {p["page"] for p in original_pages}))
 
     def save():
-        scan, items, _ = todos(results)
+        _, items, _ = todos(results)
         resolved = {note["id"]: note for note in notes}
         pending = [node for node in obligations if node["id"] not in resolved]
+        by_opening = {(node["begin_page"], node["offset"]): node for node in obligations
+                      if node["kind"] == "unclosed" and node["offset"] is not None}
         for item in items:
-            if item["id"] in resolved:
-                item.update(status="resolved", end=resolved[item["id"]]["closing_location"])
-        atomic_json(checkpoint, {"input_hash": signature, "edits": journal, "resolutions": notes})
+            node = by_opening.get((item["begin_page"], item["begin_offset"]))
+            if node:
+                item["id"] = node["id"]
+                if node["id"] in resolved:
+                    item.update(status="resolved", end=resolved[node["id"]]["closing_location"])
+        atomic_json(checkpoint, {"input_hash": signature, "edits": journal,
+                                 "resolutions": notes, "obligations": obligations})
         atomic_json(base / "seam-environment-todos.json", {
             "status": "PENDING" if pending else "PASSED", "items": items,
-            "unmatched_ends": [item for item in scan["unmatched"] if item["id"] not in resolved],
+            "unmatched_ends": [node for node in pending if node["kind"] == "unmatched_end"],
             "pending_count": len(pending), "resolutions": notes,
         })
         return pending
@@ -185,8 +266,17 @@ async def resolve_environments(engine, run, results):
         async with limit:
             if stopped:
                 raise WorkflowError("PAUSED", "其他接缝失败，停止派发新的环境待办")
+            snapshot_node = bind_node(node, snapshot)
             worker_run = copy.deepcopy(engine.live(run["id"]))
             key = f"seam-{node['id']}"
+            if node["offset"] is None:
+                if node["kind"] == "unclosed":
+                    raise WorkflowError("SEAM_OPENING_REMOVED", "本待办起点已被其他补丁删除，需检查修复冲突")
+                removed = {"edits": [], "read_pages": [], "resolved": True, "closing_page": None,
+                           "note": "本待办的结束标记已由已合并补丁移除。"}
+                engine.store.task(run["id"], key, "seams", "WAITING_MERGE", [node["begin_page"]])
+                return {"node": node, "edits": [], "seen": {node["begin_page"]},
+                        "action": removed, "snapshot": snapshot, "note": removed["note"]}
             path = base / "seam-environment-workers" / f"{node['id']}.json"
             saved_worker = load(path) if path.exists() else {}
             version = digest(snapshot)
@@ -194,7 +284,18 @@ async def resolve_environments(engine, run, results):
             same_evidence = saved_worker.get("source_hashes") and all(
                 source_hashes.get(page) == value for page, value in saved_worker["source_hashes"].items()
             )
-            if force or (saved_worker.get("input_hash") != version and not same_evidence):
+            changed_evidence = saved_worker.get("input_hash") != version and not same_evidence
+            if not force and changed_evidence and saved_worker.get("completed_action"):
+                try:
+                    receipt_edits = saved_worker.get("edits", [])
+                    receipt_seen = set(saved_worker.get("seen", []))
+                    receipt_pages = apply_edits(snapshot, receipt_edits, receipt_seen)
+                    verify(snapshot_node, snapshot, receipt_pages, saved_worker["completed_action"],
+                           receipt_seen, edits=receipt_edits)
+                    changed_evidence = False
+                except WorkflowError:
+                    pass
+            if force or changed_evidence:
                 saved_worker = {}
             numbers = [p["page"] for p in snapshot]
             initial = [node["boundary_page"]]
@@ -207,6 +308,7 @@ async def resolve_environments(engine, run, results):
             seen = set(saved_worker.get("seen", []))
             edits = saved_worker.get("edits", [])
             current = apply_edits(snapshot, edits, set(numbers)) if edits else copy.deepcopy(snapshot)
+            node = rebase_node(snapshot_node, snapshot, edits)
             history = saved_worker.get("history", [])
             feedback = saved_worker.get("feedback")
             if feedback and feedback.get("error") == "需要更多页面时不能同时声称已解决":
@@ -219,10 +321,12 @@ async def resolve_environments(engine, run, results):
                 atomic_json(path, {"input_hash": version,
                                    "source_hashes": {str(p): source_hashes[str(p)] for p in seen | {node["begin_page"]}},
                                    "requested": requested, "seen": sorted(seen),
+                                   "todo": node,
                                    "edits": edits, "history": history[-6:], "feedback": feedback, "turn": turn, "completed_action": completed_action})
 
             if completed_action:
-                verify(node, snapshot, current, completed_action, seen)
+                verify(snapshot_node, snapshot, current, completed_action, seen, edits=edits)
+                persist()
                 engine.store.task(run["id"], key, "seams", "WAITING_MERGE", sorted(seen))
                 return {"node": node, "edits": edits, "seen": seen, "action": completed_action,
                         "snapshot": snapshot, "note": completed_action["note"]}
@@ -235,7 +339,9 @@ async def resolve_environments(engine, run, results):
                 lines = opener["tex"].split("\n")
                 start = max(0, node["begin_line"] - 3)
                 payload = {"instruction": PROMPT, "phase": "environment", "tool_round": turn,
-                           "todo": node, "available_pages": {"start": min(numbers), "end": max(numbers)}, "pages": shown,
+                           "todo": {k: v for k, v in node.items()
+                                    if k not in ("offset", "token", "begin_offset", "end_offset")},
+                           "available_pages": {"start": min(numbers), "end": max(numbers)}, "pages": shown,
                            "opening_excerpt": {"page": opener["page"], "start_line": start + 1,
                                                "tex": "\n".join(lines[start:start + 8])},
                            "inspected_pages": sorted(seen), "recent_actions": history[-6:]}
@@ -263,6 +369,7 @@ async def resolve_environments(engine, run, results):
                     history = (history + [{"round": turn, "applied": False, "failure": feedback}])[-6:]
                     persist()
                     continue
+                node = rebase_node(node, current, action["edits"])
                 current = updated
                 edits.extend(action["edits"])
                 turn += 1
@@ -281,30 +388,34 @@ async def resolve_environments(engine, run, results):
     while pending:
         stopped = False
         snapshot = copy.deepcopy(pages_of(results))
-        running = [asyncio.create_task(work(node, snapshot)) for node in pending]
+        running = [asyncio.create_task(work(copy.deepcopy(node), snapshot)) for node in pending]
         try:
             for node, future in zip(pending, running):
                 answer = await future
                 current = pages_of(results)
-                old_by_page = {p["page"]: p["tex"] for p in answer["snapshot"]}
-                # Independent requests overlap; refresh only when their seen pages changed.
-                stale = any(p["tex"] != old_by_page[p["page"]] for p in current if p["page"] in answer["seen"] | {node["begin_page"]})
-                if stale:
-                    answer = await work(node, copy.deepcopy(current), force=True)
                 try:
                     updated = apply_edits(current, answer["edits"], answer["seen"])
-                    verify(node, current, updated, answer["action"], answer["seen"])
+                    verify(node, current, updated, answer["action"], answer["seen"], edits=answer["edits"])
+                    rebased = [rebase_node(target, current, answer["edits"]) for target in obligations]
                 except WorkflowError:
                     # Recheck this pair if another patch changed its matching commands.
-                    answer = await work(node, copy.deepcopy(current), force=True)
+                    answer = await work(copy.deepcopy(node), copy.deepcopy(current), force=True)
                     updated = apply_edits(current, answer["edits"], answer["seen"])
-                    verify(node, current, updated, answer["action"], answer["seen"])
+                    verify(node, current, updated, answer["action"], answer["seen"], edits=answer["edits"])
+                    rebased = [rebase_node(target, current, answer["edits"]) for target in obligations]
+                for target, moved in zip(obligations, rebased):
+                    target.update(moved)
                 set_pages(updated)
                 journal.extend(answer["edits"])
-                matched = scan_environments(updated, independent=True)["opened"].get(node["id"])
                 notes.append({"id": node["id"], "todo": node, "note": answer["note"],
-                              "closing_location": matched["end"] if matched else None,
                               "closing_page": answer["action"]["closing_page"]})
+                paired = scan_environments(updated, independent=True)
+                by_id = {target["id"]: target for target in obligations}
+                for note in notes:
+                    target = by_id.get(note["id"])
+                    if target:
+                        matched = target_pair(target, paired)
+                        note.update(todo=dict(target), closing_location=matched["end"] if matched else None)
                 save()
                 engine.store.task(run["id"], f"seam-{node['id']}", "seams", "PASSED", sorted(answer["seen"]))
         finally:

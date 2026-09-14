@@ -56,7 +56,7 @@ async function loadBook() {
     <div class="row image-actions"><label>本次修图并发<input name="image_concurrency" type="number" min="1" step="1" required value="${settings.image_repair_concurrency}"></label><button type="button" id="image-model-settings">设置修图模型</button></div>
     <p class="hint">图片修复模型：${e(modelDescription(settings.stage_models.image_repair))}。检查与裁剪后复核均使用此模型。</p>
     <p class="hint">共 ${result.images.length} 张登记图片，<span id="image-selected-count"></span>。模型和并发独立于正文转换。逐图检查，修复后复核，再集中编译；不能确认的保留原图。</p>
-    <p class="hint">模型可保留裁图并调整插入宽度，也可从原页重新裁剪。保持长宽比；不调整整页布局，也不扫描未登记的漏图。</p>
+    <p class="hint">模型可保留裁图并调整插入宽度，也可从原页重新裁剪。保持长宽比；不调整整页布局，也不扫描未登记的漏图。完成后不自动更新书库，由你预览并手动保存。</p>
     ${result.images.length ? cards(result.images, true) : '<div class="empty">此结果没有可定位的图片标记。</div>'}</form>`;
   updateSelection();
 }
@@ -80,7 +80,8 @@ async function loadJob(id) {
   $("#image-book").value = job.run.book_id;
   if (!Array.from($("#image-job").options).some(o => o.value === id)) $("#image-job").insertAdjacentHTML("beforeend", jobOption(job.run));
   $("#image-job").value = id;
-  $("#image-workspace").innerHTML = `<section class="run-status"><div class="row image-actions"><h2>${e(job.run.title)}</h2><span id="image-run-badge"></span><span class="spacer"></span><button id="image-resume" class="primary">继续修图</button><button id="image-retry" title="只在上次请求结果未确认时使用；上游可能重复计费">重试未返回请求</button><button id="image-pause">暂停</button><a id="image-pdf" class="button" href="/api/runs/${id}/pdf" target="_blank" rel="noopener">修图版 PDF ↗</a><a class="button" href="/api/runs/${id}/export">下载工程</a></div>
+  $("#image-workspace").innerHTML = `<section class="run-status"><div class="row image-actions"><h2>${e(job.run.title)}</h2><span id="image-run-badge"></span><span class="spacer"></span><button id="image-resume" class="primary">继续修图</button><button id="image-retry" title="只在上次请求结果未确认时使用；上游可能重复计费">重试未返回请求</button><button id="image-pause">暂停</button><button id="image-save" class="primary" hidden>保存到书库</button><a id="image-pdf" class="button" href="/api/runs/${id}/pdf" target="_blank" rel="noopener">修图版 PDF ↗</a><a class="button" href="/api/runs/${id}/export">下载工程</a></div>
+    <p id="image-save-note" class="hint" role="status"></p>
     <p id="image-model-summary" class="hint"></p><div id="image-config-controls" class="row image-actions"><label>修图并发<input id="image-concurrency" type="number" min="1" step="1" required value="${job.run.pending_llm_concurrency ?? job.run.concurrency}"></label><button type="button" id="image-model-settings">设置修图模型</button><button type="button" id="image-update-config">更新模型与并发</button><small>后续请求生效，已发出的请求继续执行，已完成的图片不重查。</small></div>
     <p id="image-progress" class="hint"></p><p id="image-run-message" class="error" role="alert"></p><p class="hint">原结果保留。单张待确认不阻塞其他图片；已完成只表示本轮处理与编译完成，不表示所有图片都已确认。</p></section>${cards(job.images, false)}`;
   updateJob(); schedule();
@@ -101,6 +102,13 @@ function updateJob() {
   $("#image-retry").hidden = r.state !== "PAUSED" || r.error?.code !== "RESULT_UNKNOWN";
   $("#image-pause").hidden = r.state !== "RUNNING";
   $("#image-pdf").hidden = r.state !== "COMPLETED";
+  const saved = book?.result?.run_id === r.id && !r.retention_error;
+  $("#image-save").hidden = r.state !== "COMPLETED";
+  $("#image-save").disabled = saved;
+  $("#image-save").textContent = saved ? "已保存到书库" : "保存到书库";
+  $("#image-save-note").textContent = saved
+    ? "这份修图结果已保存为书籍当前版本，旧版文件保留。"
+    : "修图结果只保留在任务中，不自动更新书库。编译完成后可预览，再点击“保存到书库”设为书籍当前版本；旧版文件保留。";
   $("#image-run-message").textContent = (r.error || r.retention_error)?.message || "";
   const byId = new Map(job.images.map(a => [a.id, a]));
   for (const card of document.querySelectorAll("[data-image-card]")) {
@@ -163,6 +171,18 @@ export function init(handlers) {
       if (button.dataset.inspectImage) { inspect(button.dataset.inspectImage); $("#image-detail").scrollIntoView({ behavior: "smooth", block: "start" }); }
       if (button.id === "image-current") await loadBook();
       if (button.id === "image-model-settings") return await callbacks.navigate("settings");
+      if (button.id === "image-save") {
+        const id = job.run.id, version = generation;
+        button.disabled = true;
+        $("#image-error").textContent = "";
+        const result = await api(`/api/runs/${id}/retain`, { method: "POST", body: {} });
+        if (version !== generation) return;
+        if (book) book.result = result;
+        job.run.retention_error = null;
+        updateJob();
+        callbacks.toast("已保存到书库，书籍当前版本已更新，旧版文件保留");
+        return;
+      }
       if (["image-select-all", "image-select-none"].includes(button.id)) {
         document.querySelectorAll('[name="asset_ids"]:not(:disabled)').forEach(input => input.checked = button.id === "image-select-all"); updateSelection();
       }
@@ -179,7 +199,7 @@ export function init(handlers) {
         if (version === generation) { updateJob(); schedule(); }
       }
     } catch (error) { if ($("#image-error")) $("#image-error").textContent = error.message; }
-    finally { button.disabled = false; }
+    finally { button.disabled = button.id === "image-save" && book?.result?.run_id === job?.run.id && !job?.run.retention_error; }
   });
   document.addEventListener("submit", async event => {
     if (event.target.id !== "image-start-form") return;

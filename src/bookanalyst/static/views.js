@@ -116,8 +116,9 @@ export function runView(r, stages, liveConcurrency = false) {
     head(
       e(r.title),
       `${r.kind === "manual_layout" ? "公式排版修复" : r.kind === "template" ? "模板重排 · " + e(r.template?.name) : r.legacy ? "历史运行" : "视觉独立转换"} · PDF ${r.pages.join("–")} 页`,
-      `<button id="retain-result"${r.state === "COMPLETED" ? "" : " hidden"}>保留到书库</button><a class="button" href="/api/runs/${r.id}/export">下载 TeX 工程</a><a class="button" id="result-pdf" href="/api/runs/${r.id}/pdf" target="_blank" rel="noopener">查看输出 PDF</a>`,
+      `<button id="retain-result"${r.state === "COMPLETED" ? "" : " hidden"}>保存到书库</button><a class="button" href="/api/runs/${r.id}/export">下载 TeX 工程</a><a class="button" id="result-pdf" href="/api/runs/${r.id}/pdf" target="_blank" rel="noopener">查看输出 PDF</a>`,
     ) +
+    '<p id="result-save-note" class="hint" role="status">结果只保留在任务中，不自动更新书库。编译完成后可预览，再点击“保存到书库”设为书籍当前版本；旧版文件保留。</p>' +
     `<section class="run-status"><div class="row"><div id="status-badge">${badge(r.state)}</div><span id="progress-text"></span><span id="usage" class="muted"></span><div class="spacer"></div><button id="resume" class="primary">开始 / 恢复</button><button id="retry-unknown" title="保留已有成果，重新提交未返回结果的请求；上游可能重复计费。">重试未返回请求</button><button id="pause">暂停</button></div>${
       r.legacy
         ? ""

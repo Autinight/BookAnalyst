@@ -202,10 +202,17 @@ async def test_verified_recrop_changes_only_copy_and_compiles_once(app, monkeypa
     assert len(calls) == 3 and len(compiles) == 1
     assert (original / "assets" / (assets[0]["id"] + ".png")).read_bytes() == original_crop
     assert (base / "tex/body.tex").read_bytes() == original_body
-    assert store.get("book", BOOK)["retained_result"]["run_id"] == run["id"]
+    assert store.get("book", BOOK)["retained_result"] == result
     with Image.open(base / "tex/assets" / (assets[0]["id"] + ".png")) as crop:
         assert crop.size == (100, 120)
         assert crop.info["dpi"] == pytest.approx((150, 150), abs=0.02)
+    with TestClient(app) as client:
+        auth = headers(client)
+        assert client.post(f"/api/runs/{run['id']}/retain").status_code == 403
+        response = client.post(f"/api/runs/{run['id']}/retain", headers=auth)
+        assert response.status_code == 200, response.text
+        assert client.post(f"/api/runs/{run['id']}/retain", headers=auth).json() == response.json()
+    assert store.get("book", BOOK)["retained_result"]["run_id"] == run["id"]
     saved = retained_directory(store, store.get("book", BOOK))
     assert json.loads((saved / MANIFEST).read_text())["assets"][0]["bbox"] == [0.1, 0.2, 0.6, 0.8]
 
@@ -235,6 +242,8 @@ async def test_size_only_keeps_pixels_and_is_repairable_again(app, monkeypatch):
     with Image.open(base / "tex/assets" / (assets[0]["id"] + ".png")) as current:
         with Image.open(original / "assets" / (assets[0]["id"] + ".png")) as before:
             assert current.size == before.size and current.tobytes() == before.tobytes()
+    assert store.get("book", BOOK)["retained_result"] == result
+    retain_run(store, run["id"])
     saved = retained_directory(store, store.get("book", BOOK))
     _, rows = image_inventory(store, store.get("book", BOOK), saved, run["id"])
     assert rows[0]["id"] == assets[0]["id"] and rows[0]["repairable"]
@@ -423,15 +432,19 @@ def test_old_template_results_recover_original_crop_provenance(app):
     assert rows[0]["repairable"] and rows[0]["bbox"] == assets[0]["bbox"]
 
 
-def test_image_job_cannot_replace_a_newer_book_result(app):
+def test_user_can_save_selected_image_candidate_after_another_version(app):
     result, assets = seed(app, 1)
     run = create(app, result, assets)
     newer, _ = completed(app, "Newer user result")
     latest = retain_run(app.state.store, newer["id"])
     app.state.store.change(run["id"], lambda r: r.update(state="COMPLETED"))
-    with pytest.raises(WorkflowError, match="书库已有更新结果"):
-        retain_run(app.state.store, run["id"])
-    assert app.state.store.get("book", BOOK)["retained_result"] == latest
+    newer_directory = retained_directory(app.state.store, app.state.store.get("book", BOOK))
+    with TestClient(app) as client:
+        saved = client.post(f"/api/runs/{run['id']}/retain", headers=headers(client))
+        assert saved.status_code == 200, saved.text
+    assert app.state.store.get("book", BOOK)["retained_result"]["run_id"] == run["id"]
+    assert newer_directory.name == latest["id"]
+    assert (newer_directory / "body.tex").read_text() == "Newer user result"
 
 
 @pytest.mark.parametrize("box", [[0, 0, float("nan"), 1], [0, 0, 0, 1], [0, 0, 2, 1], [True, 0, 1, 1]])
