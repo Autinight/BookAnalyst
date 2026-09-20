@@ -22,6 +22,7 @@ from .library import register_library_routes
 from .image_repair import register_image_routes
 from .library_outputs import output_directory, retained_directory, public_result
 from .model_config import MODEL_STAGES, settings_models
+from .provider_usage import usage_ledger
 
 
 def create_app(workspace=None, data_dir=None):
@@ -106,6 +107,10 @@ def create_app(workspace=None, data_dir=None):
     register_template_routes(app, store, engine)
     register_image_routes(app, store, engine)
 
+    @app.get("/api/health")
+    def health():
+        return {"application": "BookAnalyst", "workspace": str(workspace)}
+
     def books(deleted=False):
         return [
             {k: b[k] for k in ("id", "title", "page_count", "size_bytes")} | {"result": public_result(b)}
@@ -134,15 +139,24 @@ def create_app(workspace=None, data_dir=None):
         for name, conn in value["connections"].items():
             conn.pop("max_in_flight", None)
             if conn["kind"] == "openai_compatible":
-                conn["api_key_configured"] = bool(providers.api_key(name, conn))
+                conn["api_key"] = providers.api_key(name, conn)
+                conn["api_key_configured"] = bool(conn["api_key"])
+                conn["auth_mode"] = "bearer" if conn["api_key"] else "none"
+                conn["enabled"] = bool(conn.get("base_url"))
                 conn.pop("api_key_env", None)
             elif conn["kind"] == "grok_oauth":
                 conn["oauth_configured"] = providers.grok_configured(name)
+            if "models" not in conn:
+                conn["models"] = [{"id": conn["model_id"]}] if conn.get("model_id") else []
         return value
 
     @app.get("/api/settings")
     async def settings():
         return public_settings()
+
+    @app.get("/api/providers/usage")
+    def provider_usage(days: int = Query(default=7, ge=0, le=366)):
+        return {"entries": usage_ledger(store, days)}
 
     @app.put("/api/settings")
     async def save_settings(request: Request):
@@ -159,6 +173,47 @@ def create_app(workspace=None, data_dir=None):
     @app.post("/api/connections/{cid}/test")
     async def test_connection(cid: str):
         return await providers.test(cid)
+
+    @app.post("/api/providers/probe")
+    async def probe_provider(request: Request):
+        body = await request.json()
+        if not isinstance(body, dict) or not isinstance(body.get("id"), str) or not isinstance(body.get("connection"), dict):
+            raise WorkflowError("INVALID_CONFIG", "供应商配置无效", 422)
+        cid, draft = body["id"], body["connection"]
+        previous = public_settings()
+        previous["connections"][cid] = draft
+        value, credentials = prepare_settings(previous, store.get("settings", "main"))
+        conn = value["connections"][cid]
+        if conn["kind"] != "openai_compatible":
+            return await providers.status(cid)
+        conn = conn | {"_api_key": credentials.get(cid, providers.api_key(cid, conn))}
+        return await providers.discover(cid, conn) if body.get("discover") else await providers.test(cid, conn)
+
+    @app.delete("/api/connections/{cid}")
+    async def delete_connection(cid: str):
+        value = public_settings()
+        conn = value["connections"].get(cid)
+        if not conn:
+            raise WorkflowError("NOT_FOUND", "供应商不存在", 404)
+        if conn["kind"] != "openai_compatible":
+            raise WorkflowError("INVALID_CONFIG", "官方订阅请使用退出登录", 422)
+        del value["connections"][cid]
+        fallback = value["default_connection"] if value["default_connection"] != cid else "openai_subscription"
+        value["default_connection"] = fallback
+        for binding in value["stage_models"].values():
+            if binding["connection_id"] == cid:
+                binding.update(connection_id=fallback, model_id="")
+        value, credentials = prepare_settings(value, store.get("settings", "main"))
+        store.save_settings(value, credentials)
+        return public_settings()
+
+    @app.post("/api/connections/{cid}/models")
+    async def discover_models(cid: str):
+        return await providers.discover(cid)
+
+    @app.post("/api/connections/{cid}/logout")
+    async def logout(cid: str):
+        return await providers.logout(cid)
 
     @app.post("/api/connections/{cid}/login")
     async def login(cid: str):

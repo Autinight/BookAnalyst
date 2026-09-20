@@ -122,6 +122,10 @@ class Store:
     def save_settings(self, value, credentials):
         with self.connection() as db:
             db.execute("BEGIN IMMEDIATE")
+            previous = db.execute("SELECT payload FROM objects WHERE kind='settings' AND id='main'").fetchone()
+            removed = set(json.loads(previous[0])["connections"]) - set(value["connections"]) if previous else set()
+            for name in removed:
+                db.execute("DELETE FROM objects WHERE kind='credential' AND id=?", (name,))
             db.execute(
                 "INSERT OR REPLACE INTO objects VALUES(?,?,?)",
                 ("settings", "main", encode(value)),

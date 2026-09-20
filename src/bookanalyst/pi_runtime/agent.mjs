@@ -30,18 +30,20 @@ try {
     credentials: new InMemoryCredentialStore(), modelsPath: null,
     modelsStorePath: path.join(agentDir, "models-cache.json"), refreshOnCreate: false,
   });
-  const api = config.protocol === "responses" ? "openai-responses" : "openai-completions";
+  const api = { responses: "openai-responses", chat_completions: "openai-completions", anthropic: "anthropic-messages", gemini: "google-generative-ai" }[config.protocol];
+  if (!api) throw new Error("Unsupported API protocol");
+  const meta = config.model_meta || {};
   const known = modelRuntime.getModels().find(m => m.id === config.model_id);
   const level = { none: "off", minimal: "minimal", low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "xhigh", ultra: "xhigh" }[config.effort] || "medium";
   modelRuntime.registerProvider("bookanalyst", {
     name: "BookAnalyst API", api, baseUrl: config.base_url,
-    authHeader: config.auth_mode !== "none",
+    authHeader: config.auth_mode !== "none" && api.startsWith("openai-"),
     headers: config.headers && typeof config.headers === "object" ? config.headers : undefined,
     models: [{
-      id: config.model_id, name: config.model_id, reasoning: level !== "off",
+      id: config.model_id, name: meta.name || config.model_id, reasoning: meta.reasoning !== false && level !== "off",
       input: config.image_support === "supported" ? ["text", "image"] : ["text"],
-      contextWindow: known?.contextWindow || 128000,
-      maxTokens: known?.maxTokens || 16384,
+      contextWindow: meta.context || known?.contextWindow || 128000,
+      maxTokens: meta.max_output || known?.maxTokens || 16384,
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       thinkingLevelMap: { [level]: config.effort },
       ...(api === "openai-completions" ? { compat: { supportsDeveloperRole: false, maxTokensField: "max_tokens" } } : {}),

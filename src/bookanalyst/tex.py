@@ -1,6 +1,6 @@
 """Compile the assembled document using the installed XeLaTeX."""
 
-import asyncio, os, re, shutil
+import asyncio, os, re, shutil, subprocess
 from pathlib import Path
 from .reference_review import review_records, compiler_diagnostics, UNDEFINED_WARNING
 
@@ -32,6 +32,7 @@ async def compile_tex(directory, executable=None):
             env=dict(os.environ, openin_any="p", openout_any="p"),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
         )
         try:
             raw, _ = await asyncio.wait_for(process.communicate(), 90)

@@ -1,4 +1,4 @@
-"""Write-only credentials: persistence, replacement, clearing and actual adapter headers."""
+"""Editable local keys: persistence, replacement, clearing and adapter headers."""
 
 import json
 import httpx
@@ -14,20 +14,20 @@ def client_for(app):
     return client
 
 
-def test_key_is_write_only_preserved_and_persistent(app):
-    marker = "test-key-never-return-this-value"
+def test_key_is_displayed_preserved_and_persistent(app):
+    marker = "test-visible-local-key"
     with client_for(app) as client:
         settings = client.get("/api/settings").json()
         conn = settings["connections"]["custom_api"]
-        assert "api_key_env" not in conn and "api_key" not in conn
+        assert "api_key_env" not in conn and "api_key" in conn
         conn["api_key"] = marker
         response = client.put("/api/settings", json=settings)
-        assert response.status_code == 200 and marker not in response.text
+        assert response.status_code == 200
+        assert response.json()["connections"]["custom_api"]["api_key"] == marker
         assert response.json()["connections"]["custom_api"]["api_key_configured"]
         saved = response.json()
-        saved["connections"]["custom_api"]["api_key"] = ""
         assert client.put("/api/settings", json=saved).status_code == 200
-        assert marker not in client.get("/api/settings").text
+        assert client.get("/api/settings").json()["connections"]["custom_api"]["api_key"] == marker
         assert marker not in client.get("/api/bootstrap").text
         assert marker not in json.dumps(app.state.store.get("settings", "main"))
     restarted = create_app(app.state.workspace, app.state.store.root)
@@ -45,6 +45,7 @@ def test_rotation_clear_and_invalid_settings_are_atomic(app, monkeypatch):
     with client_for(app) as client:
         settings = client.get("/api/settings").json()
         assert settings["connections"]["custom_api"]["api_key_configured"]
+        assert settings["connections"]["custom_api"]["api_key"] == "test-legacy-env-key"
         settings["connections"]["custom_api"]["api_key"] = "test-new-key"
         response = client.put("/api/settings", json=settings)
         assert response.status_code == 200
@@ -62,13 +63,15 @@ def test_rotation_clear_and_invalid_settings_are_atomic(app, monkeypatch):
         response = client.put("/api/settings", json=settings)
         assert key() == "test-rotated-key"
         settings = response.json()
-        settings["connections"]["custom_api"]["clear_api_key"] = True
+        settings["connections"]["custom_api"]["api_key"] = ""
         response = client.put("/api/settings", json=settings)
         assert (
             response.status_code == 200
             and not response.json()["connections"]["custom_api"]["api_key_configured"]
         )
         assert key() == ""  # Clearing must not fall back to the old environment key.
+        assert response.json()["connections"]["custom_api"]["api_key"] == ""
+        assert response.json()["connections"]["custom_api"]["auth_mode"] == "none"
         assert client.put("/api/settings", json=response.json()).status_code == 200
         assert key() == ""
 
@@ -88,7 +91,7 @@ async def test_pasted_key_is_used_only_in_authorization_header(app, protocol, tm
             image_support="supported",
         )
         response = client.put("/api/settings", json=settings)
-        assert response.status_code == 200 and key not in response.text
+        assert response.status_code == 200
     seen = []
 
     def handle(request):

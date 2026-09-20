@@ -1,4 +1,4 @@
-"""Connection settings with write-only API keys and legacy environment references."""
+"""Connection settings with locally stored API keys and legacy environment references."""
 
 import copy
 import os
@@ -57,8 +57,9 @@ def connection_allowed_fields(kind):
     if template is None:
         return None
     allowed = set(DEFAULT_SETTINGS["connections"][template])
+    allowed.update({"models", "preset"})
     if kind == "openai_compatible":
-        allowed.add("api_key_env")
+        allowed.update({"api_key_env", "headers"})
     return allowed
 
 
@@ -66,6 +67,8 @@ def ensure_builtin_connections(settings):
     connections = settings.setdefault("connections", {})
     changed = False
     for cid, conn in DEFAULT_SETTINGS["connections"].items():
+        if conn["kind"] == "openai_compatible":
+            continue
         if cid not in connections:
             connections[cid] = copy.deepcopy(conn)
             changed = True
@@ -112,6 +115,24 @@ def validate_settings(value):
         allowed = connection_allowed_fields(kind)
         if allowed is None or set(conn) - allowed:
             raise WorkflowError("INVALID_CONFIG", "连接字段无效", 422)
+        models = conn.get("models", [])
+        if not isinstance(models, list):
+            raise WorkflowError("INVALID_CONFIG", "模型列表无效", 422)
+        ids = set()
+        for model in models:
+            if not isinstance(model, dict) or not isinstance(model.get("id"), str) or not model["id"].strip() or model["id"] in ids:
+                raise WorkflowError("INVALID_CONFIG", "模型 ID 不能为空或重复", 422)
+            ids.add(model["id"])
+            if set(model) - {"id", "name", "context", "max_output", "image", "reasoning"}:
+                raise WorkflowError("INVALID_CONFIG", "模型字段无效", 422)
+            if "name" in model and not isinstance(model["name"], str):
+                raise WorkflowError("INVALID_CONFIG", "模型名称无效", 422)
+            for field in ("context", "max_output"):
+                if field in model and (type(model[field]) is not int or model[field] < 1):
+                    raise WorkflowError("INVALID_CONFIG", "模型长度必须为正整数", 422)
+            for field in ("image", "reasoning"):
+                if field in model and type(model[field]) is not bool:
+                    raise WorkflowError("INVALID_CONFIG", "模型能力必须为布尔值", 422)
         if (
             not isinstance(conn.get("timeout_seconds"), int)
             or not 1 <= conn["timeout_seconds"] <= 3600
@@ -119,12 +140,19 @@ def validate_settings(value):
             raise WorkflowError("INVALID_CONFIG", "连接超时必须为 1–3600 秒", 422)
         if kind == "openai_compatible":
             validate_url(conn.get("base_url", ""), allow_empty=not conn.get("enabled"))
-            if conn.get("protocol") not in ("responses", "chat_completions"):
+            if conn.get("protocol") not in ("responses", "chat_completions", "anthropic", "gemini"):
                 raise WorkflowError("INVALID_CONFIG", "必须显式选择 API 协议", 422)
             if conn.get("auth_mode") not in ("bearer", "none"):
                 raise WorkflowError("INVALID_CONFIG", "鉴权方式无效", 422)
             if conn.get("image_support") not in ("unknown", "supported", "unsupported"):
                 raise WorkflowError("INVALID_CONFIG", "图像能力状态无效", 422)
+            headers = conn.get("headers", {})
+            if not isinstance(headers, dict) or any(
+                not isinstance(k, str) or not re.fullmatch(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+", k)
+                or not isinstance(v, str) or not v.isascii() or "\r" in v or "\n" in v
+                for k, v in headers.items()
+            ):
+                raise WorkflowError("INVALID_CONFIG", "请求头须为有效的名称和值", 422)
             if "api_key_env" in conn and not re.fullmatch(
                 r"[A-Z][A-Z0-9_]{0,99}", conn["api_key_env"]
             ):
@@ -145,7 +173,7 @@ def validate_settings(value):
             raise WorkflowError("INVALID_CONFIG", f"{MODEL_STAGES[stage]}的模型配置无效", 422) from exc
         conn = value["connections"].get(binding["connection_id"])
         if not conn or not conn.get("enabled"):
-            raise WorkflowError("INVALID_CONFIG", f"{MODEL_STAGES[stage]}请选择已启用的连接", 422)
+            raise WorkflowError("INVALID_CONFIG", f"{MODEL_STAGES[stage]}请选择已完成配置的供应商", 422)
         bindings[stage] = binding
     return value
 
@@ -167,23 +195,23 @@ def prepare_settings(value, previous):
         conn.pop("oauth_configured", None)
         if conn.get("kind") != "openai_compatible":
             continue
+        conn["enabled"] = bool(conn.get("base_url"))
+        key_provided = "api_key" in conn
         key = conn.pop("api_key", "")
-        clear = conn.pop("clear_api_key", False)
         conn.pop("api_key_configured", None)
-        if not isinstance(key, str) or not isinstance(clear, bool):
+        if not isinstance(key, str):
             raise WorkflowError(
-                "INVALID_CONFIG", "API 密钥必须为文本，清除选项必须为布尔值", 422
+                "INVALID_CONFIG", "API 密钥必须为文本", 422
             )
         key = key.strip()
         if any(c.isspace() for c in key) or not key.isascii():
             raise WorkflowError(
                 "INVALID_CONFIG", "API 密钥不能包含空格、换行或非 ASCII 字符", 422
             )
-        if key and clear:
-            raise WorkflowError("INVALID_CONFIG", "填写新密钥时请取消清除选项", 422)
         old = previous["connections"].get(name, {})
         if "api_key_env" not in conn and "api_key_env" in old:
             conn["api_key_env"] = old["api_key_env"]
-        if key or clear:
+        if key_provided:
             credentials[name] = key
+            conn["auth_mode"] = "bearer" if key else "none"
     return validate_settings(value), credentials

@@ -32,11 +32,10 @@ def test_many_providers_rename_and_restart(app):
         assert response.status_code == 200
         saved = response.json()
         assert len(saved["connections"]) == len(original) + 25
-        assert all(f"test-key-{i}" not in response.text for i in range(25))
+        assert all(saved["connections"][f"api_{i}"]["api_key"] == f"test-key-{i}" for i in range(25))
         assert all(saved["connections"][cid] == conn for cid, conn in original.items())
         before = copy.deepcopy(saved)
         saved["connections"]["api_7"]["name"] = "  主力模型 / 中文供应商  "
-        saved["connections"]["api_7"]["api_key"] = ""
         response = client.put("/api/settings", json=saved)
         assert response.status_code == 200
         renamed = response.json()

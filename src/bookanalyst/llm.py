@@ -11,11 +11,13 @@ import time
 import tomllib
 from itertools import chain
 from pathlib import Path
+from urllib.parse import quote
 
 import httpx
 from jsonschema.validators import validator_for
 from .config import secret
 from . import grok_oauth
+from .background_process import hide_codex_console
 from .store import WorkflowError, atomic_json, digest, encode, write_async
 from .validation_feedback import schema_issues, syntax_error, validation_error
 
@@ -110,6 +112,8 @@ class Providers:
             if self.sdk is None:
                 from openai_codex import AsyncCodex, CodexConfig
 
+                hide_codex_console()
+
                 working = self.store.root / "model-sessions"
                 working.mkdir(exist_ok=True)
                 self.runtime = await asyncio.to_thread(discover_runtime)
@@ -161,6 +165,8 @@ class Providers:
             if self.agent_sdk is None:
                 from openai_codex import AsyncCodex, CodexConfig
 
+                hide_codex_console()
+
                 runtime = await asyncio.to_thread(discover_runtime)
                 self.agent_sdk = AsyncCodex(CodexConfig(
                     codex_bin=runtime["path"], cwd=str(self.workspace),
@@ -204,8 +210,8 @@ class Providers:
     def connection(self, connection_id):
         settings = self.store.get("settings", "main")
         conn = settings["connections"].get(connection_id)
-        if not conn or not conn["enabled"]:
-            raise WorkflowError("CONFIG_REQUIRED", "模型连接不存在或未启用", 422)
+        if not conn or (not conn.get("base_url") if conn["kind"] == "openai_compatible" else not conn["enabled"]):
+            raise WorkflowError("CONFIG_REQUIRED", "供应商不存在或尚未完成配置", 422)
         return conn
 
     def api_key(self, connection_id, conn):
@@ -248,7 +254,7 @@ class Providers:
         ready = conn["auth_mode"] == "none" or bool(self.api_key(connection_id, conn))
         return {
             "status": "CONFIGURED_UNTESTED" if ready else "AUTH_REQUIRED",
-            "models": [
+            "models": conn.get("models") or [
                 {
                     "id": conn["model_id"],
                     "inputModalities": ["text", "image"]
@@ -260,11 +266,18 @@ class Providers:
         }
 
     def _custom_headers(self, connection_id, conn):
-        headers = dict(conn.get("_extra_headers") or {})
+        headers = httpx.Headers(dict(conn.get("headers") or {}) | dict(conn.get("_extra_headers") or {}))
         if conn.get("auth_mode") == "bearer":
-            token = conn.get("_access_token") or self.api_key(connection_id, conn)
-            headers["Authorization"] = "Bearer " + token
-        return headers
+            token = conn.get("_api_key", conn.get("_access_token") or self.api_key(connection_id, conn))
+            if conn.get("protocol") == "anthropic":
+                headers["x-api-key"] = token
+            elif conn.get("protocol") == "gemini":
+                headers["x-goog-api-key"] = token
+            else:
+                headers["Authorization"] = "Bearer " + token
+        if conn.get("protocol") == "anthropic":
+            headers.setdefault("anthropic-version", "2023-06-01")
+        return dict(headers)
 
     def _http_status(self, response):
         if response.status_code in (401, 403):
@@ -301,23 +314,65 @@ class Providers:
                 self.store.finish_call(call["id"], call["state"], retry_exhausted=True)
 
     def _model_entries(self, payload, fallback=""):
-        raw = payload.get("data", payload) if isinstance(payload, dict) else payload
+        raw = payload.get("data", payload.get("models", [])) if isinstance(payload, dict) else payload
         models = []
         if isinstance(raw, list):
             for item in raw:
                 if not isinstance(item, dict):
                     continue
-                model_id = item.get("id") or item.get("model")
+                model_id = item.get("id") or item.get("model") or item.get("name", "").removeprefix("models/")
                 if model_id:
-                    models.append({"id": model_id})
+                    entry = {"id": model_id}
+                    for source, dest in (("displayName", "name"), ("name", "name"), ("context_length", "context"), ("inputTokenLimit", "context"), ("outputTokenLimit", "max_output")):
+                        if source in item and not str(item[source]).startswith("models/"):
+                            entry.setdefault(dest, item[source])
+                    modalities = item.get("architecture", {}).get("input_modalities") or item.get("inputModalities")
+                    if modalities:
+                        entry["image"] = "image" in modalities
+                    for field in ("image", "reasoning"):
+                        if type(item.get(field)) is bool:
+                            entry[field] = item[field]
+                    models.append(entry)
         ids = {m["id"] for m in models}
         if fallback and fallback not in ids:
             models.insert(0, {"id": fallback})
-        return models[:50]
+        return list({m["id"]: m for m in models}.values())
 
-    async def test(self, connection_id):
+    def _models_url(self, conn):
+        base = conn["base_url"].rstrip("/")
+        return base + ("/v1/models" if conn["protocol"] == "anthropic" and not base.endswith("/v1") else "/models")
+
+    async def discover(self, connection_id, conn=None):
+        conn = conn or self.connection(connection_id)
+        if conn["kind"] != "openai_compatible":
+            return await self.status(connection_id)
+        if not conn.get("base_url"):
+            return {"status": "CONFIG_REQUIRED", "models": [], "message": "请填写 API 地址"}
+        try:
+            models, cursor = [], None
+            async with httpx.AsyncClient(timeout=min(30, conn["timeout_seconds"]), transport=self.transport) as client:
+                while True:
+                    params = {}
+                    if cursor:
+                        params["pageToken" if conn["protocol"] == "gemini" else "after_id"] = cursor
+                    response = await client.get(self._models_url(conn), headers=self._custom_headers(connection_id, conn), params=params)
+                    code, message = self._http_status(response)
+                    if code:
+                        return {"status": code, "models": [], "message": message}
+                    body = response.json()
+                    models.extend(self._model_entries(body))
+                    next_cursor = body.get("nextPageToken") or (body.get("last_id") if body.get("has_more") else None)
+                    if not next_cursor or next_cursor == cursor:
+                        break
+                    cursor = next_cursor
+            models = list({m["id"]: m for m in models}.values())
+            return {"status": "READY", "models": models, "message": f"已获取 {len(models)} 个模型"}
+        except (httpx.RequestError, ValueError):
+            return {"status": "REQUEST_FAILED", "models": [], "message": "无法获取模型列表，可手动添加模型 ID"}
+
+    async def test(self, connection_id, conn=None):
         settings = self.store.get("settings", "main")
-        conn = settings["connections"].get(connection_id)
+        conn = conn or settings["connections"].get(connection_id)
         if not conn:
             raise WorkflowError("CONFIG_REQUIRED", "模型连接不存在", 422)
         if conn["kind"] in ("codex_chatgpt", "grok_oauth"):
@@ -326,13 +381,7 @@ class Providers:
             raise WorkflowError("INVALID_CHANNEL", "此连接不支持检查", 422)
         if not conn.get("base_url"):
             return {"status": "CONFIG_REQUIRED", "models": [], "message": "请填写 API 地址"}
-        if not conn.get("model_id"):
-            return {
-                "status": "MODEL_UNAVAILABLE",
-                "models": [],
-                "message": "请配置自定义模型 ID",
-            }
-        if conn["auth_mode"] == "bearer" and not self.api_key(connection_id, conn):
+        if conn["auth_mode"] == "bearer" and not conn.get("_api_key", self.api_key(connection_id, conn)):
             return {
                 "status": "AUTH_REQUIRED",
                 "models": [],
@@ -345,7 +394,7 @@ class Providers:
             async with httpx.AsyncClient(
                 timeout=timeout, transport=self.transport
             ) as client:
-                listed = await client.get(base + "/models", headers=headers)
+                listed = await client.get(self._models_url(conn), headers=headers)
                 code, message = self._http_status(listed)
                 if listed.status_code not in (404, 405) and code:
                     return {"status": code, "models": [], "message": message}
@@ -365,7 +414,12 @@ class Providers:
                             "message": message,
                             "image_support": conn["image_support"],
                         }
-                if conn["protocol"] == "chat_completions":
+                if not conn.get("model_id"):
+                    return {"status": "MODEL_UNAVAILABLE", "models": [], "message": "服务没有返回模型，请手动添加后重试"}
+                if conn["protocol"] in ("anthropic", "gemini"):
+                    endpoint, headers, content = self._custom_payload(conn, {"connection_id": connection_id, "model_id": conn["model_id"]}, "ping", {"type": "object"}, [])
+                    payload = json.loads(content)
+                elif conn["protocol"] == "chat_completions":
                     payload = {
                         "model": conn["model_id"],
                         "messages": [{"role": "user", "content": "ping"}],
@@ -413,6 +467,17 @@ class Providers:
             raise WorkflowError("INVALID_CHANNEL", "此连接使用 API 配置", 422)
         handle = await (await self.codex()).login_chatgpt()
         return {"auth_url": handle.auth_url, "login_id": handle.login_id}
+
+    async def logout(self, connection_id):
+        kind = self.connection(connection_id)["kind"]
+        if kind == "grok_oauth":
+            await self._cancel_grok_login()
+            self.store.put("credential", connection_id, {})
+        elif kind == "codex_chatgpt":
+            await (await self.codex()).logout()
+        else:
+            raise WorkflowError("INVALID_CHANNEL", "此连接使用 API 密钥", 422)
+        return {"status": "AUTH_REQUIRED", "models": [], "message": "已退出登录"}
 
     def grok_credential(self, connection_id):
         try:
@@ -603,9 +668,10 @@ class Providers:
         else:
             if not model_id:
                 raise WorkflowError("MODEL_UNAVAILABLE", "请配置自定义模型 ID", 422)
-            if require_image and conn["image_support"] != "supported":
+            model_meta = next((m for m in conn.get("models", []) if m["id"] == model_id), {})
+            if require_image and model_meta.get("image") is False:
                 raise WorkflowError(
-                    "CAPABILITY_UNSUPPORTED", "自定义模型图像能力尚未确认", 422
+                    "CAPABILITY_UNSUPPORTED", "所选模型标记为不支持图像，请选择视觉模型", 422
                 )
             if conn["auth_mode"] == "bearer" and not self.api_key(
                 binding["connection_id"], conn
@@ -1020,7 +1086,29 @@ class Providers:
             "character must be { and the last must be }. Do not include explanations, Markdown "
             "code fences, XML, or tool-call syntax. Schema: " + encode(schema)
         )
-        if conn["protocol"] == "chat_completions":
+        meta = next((m for m in conn.get("models", []) if m["id"] == binding["model_id"]), {})
+        if conn["protocol"] == "anthropic":
+            payload = {
+                "model": binding["model_id"], "system": instruction,
+                "max_tokens": meta.get("max_output", 8192),
+                "messages": [{"role": "user", "content": [{"type": "text", "text": prompt}] + [
+                    {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": url.split(",", 1)[1]}}
+                    for url in image_urls
+                ]}],
+            }
+            endpoint = "/messages" if conn["base_url"].rstrip("/").endswith("/v1") else "/v1/messages"
+        elif conn["protocol"] == "gemini":
+            payload = {
+                "systemInstruction": {"parts": [{"text": instruction}]},
+                "contents": [{"role": "user", "parts": [{"text": prompt}] + [
+                    {"inlineData": {"mimeType": "image/png", "data": url.split(",", 1)[1]}} for url in image_urls
+                ]}],
+                "generationConfig": {"responseMimeType": "application/json"},
+            }
+            if meta.get("max_output"):
+                payload["generationConfig"]["maxOutputTokens"] = meta["max_output"]
+            endpoint = "/models/" + quote(binding["model_id"].removeprefix("models/"), safe="") + ":generateContent"
+        elif conn["protocol"] == "chat_completions":
             content = [{"type": "text", "text": prompt}] + [
                 {"type": "image_url", "image_url": {"url": url}} for url in image_urls
             ]
@@ -1033,7 +1121,10 @@ class Providers:
                 "stream": False,
                 "response_format": {"type": "json_object"},
             }
-            payload["reasoning_effort"] = binding.get("reasoning_effort", "medium")
+            if meta.get("reasoning") is not False:
+                payload["reasoning_effort"] = binding.get("reasoning_effort", "medium")
+            if meta.get("max_output"):
+                payload["max_completion_tokens"] = meta["max_output"]
             endpoint = "/chat/completions"
         else:
             content = [{"type": "input_text", "text": prompt}] + [
@@ -1046,7 +1137,10 @@ class Providers:
                 "stream": bool(conn.get("_stream")),
                 "store": False,
             }
-            payload["reasoning"] = {"effort": binding.get("reasoning_effort", "medium")}
+            if meta.get("reasoning") is not False:
+                payload["reasoning"] = {"effort": binding.get("reasoning_effort", "medium")}
+            if meta.get("max_output"):
+                payload["max_output_tokens"] = meta["max_output"]
             endpoint = "/responses"
         # Serialize the image-heavy body here, not inside client.post on the loop.
         content = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
@@ -1102,6 +1196,15 @@ class Providers:
         return completed
 
     def _custom_result(self, conn, data):
+        if conn["protocol"] == "anthropic":
+            if data.get("stop_reason") != "end_turn":
+                raise WorkflowError("TRUNCATED", "模型输出未完整结束", review=True)
+            return "".join(c["text"] for c in data.get("content", []) if c.get("type") == "text"), data.get("usage")
+        if conn["protocol"] == "gemini":
+            candidate = (data.get("candidates") or [{}])[0]
+            if candidate.get("finishReason") != "STOP":
+                raise WorkflowError("TRUNCATED", "模型输出未完整结束", review=True)
+            return "".join(c.get("text", "") for c in candidate.get("content", {}).get("parts", []) if not c.get("thought")), data.get("usageMetadata")
         if conn["protocol"] == "chat_completions":
             choice = data["choices"][0]
             if choice.get("finish_reason") != "stop":

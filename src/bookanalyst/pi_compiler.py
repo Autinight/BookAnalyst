@@ -82,14 +82,19 @@ async def repair_project(providers, run, project, feedback, instructions, bindin
                     task_id="finish-project", model_id=binding["model_id"],
                     connection_id=binding["connection_id"], repair=True, attempt=1,
                     reasoning_effort=binding.get("reasoning_effort", "medium"))
+    model_meta = next((m for m in conn.get("models", []) if m["id"] == binding["model_id"]), {})
     config = dict(project=str(project.resolve()), agent_dir=str((store.root / "pi-agent").resolve()),
                   session_dir=str((project.parent / "pi-sessions").resolve()),
                   session_file=session.get("session_file"), instructions=instructions, prompt=prompt,
                   model_id=binding["model_id"], effort=metadata["reasoning_effort"],
                   base_url=conn["base_url"].rstrip("/"), protocol=conn["protocol"],
                   auth_mode=conn["auth_mode"], api_key=key,
-                  image_support=conn["image_support"], timeout_seconds=conn["timeout_seconds"],
-                  headers=conn.get("_extra_headers") or {})
+                  image_support="unsupported" if model_meta.get("image") is False else "supported",
+                  model_meta=model_meta, timeout_seconds=conn["timeout_seconds"],
+                  headers=(conn.get("headers") or {}) | (conn.get("_extra_headers") or {}))
+    # Anthropic's SDK appends /v1 itself; the HTTP worker accepts either root form.
+    if conn["protocol"] == "anthropic":
+        config["base_url"] = config["base_url"].removesuffix("/v1")
     if store.get("run", run["id"]).get("pause_requested"):
         raise WorkflowError("PAUSED", "已保存当前工程")
     call_id = store.reserve(run["id"], run["revision"], "llm", 1, metadata)

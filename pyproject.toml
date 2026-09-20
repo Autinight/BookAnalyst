@@ -23,9 +23,13 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "pytest-asyncio>=0.24"]
+desktop = ["pywebview>=6,<7"]
 
 [project.scripts]
 bookanalyst = "bookanalyst.__main__:main"
+
+[project.gui-scripts]
+bookanalyst-desktop = "bookanalyst.desktop:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

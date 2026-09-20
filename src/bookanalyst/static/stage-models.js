@@ -6,7 +6,6 @@ export function stageModelSettings(settings, stages) {
   const rows = Object.entries(stages).map(([stage, title]) => {
     const binding = settings.stage_models[stage];
     const connections = Object.entries(settings.connections)
-      .filter(([id, conn]) => conn.enabled || id === binding.connection_id)
       .map(([id, conn]) => `<option value="${e(id)}"${id === binding.connection_id ? " selected" : ""}>${e(connectionName(id, conn))}</option>`).join("");
     return `<div class="stage-model-row" data-model-stage="${stage}">
       <div class="stage-model-title">${e(title)}</div>
@@ -27,7 +26,11 @@ export function stageModelSettings(settings, stages) {
 }
 
 export async function loadStageModelChoices(container, settings) {
-  await Promise.allSettled(Object.entries(settings.connections).filter(([, c]) => c.enabled).map(async ([id]) => {
+  for (const [id, conn] of Object.entries(settings.connections)) {
+    const list = container.querySelector(`[id="stage-models-${id}"]`);
+    if (list) list.innerHTML = (conn.models || []).map(m => `<option value="${e(m.id)}">${e(m.name || m.id)}</option>`).join("");
+  }
+  await Promise.allSettled(Object.entries(settings.connections).filter(([, c]) => c.kind !== "openai_compatible" && !c.models?.length && c.enabled).map(async ([id]) => {
     const status = await api(`/api/connections/${encodeURIComponent(id)}/status`);
     if (!container.isConnected) return;
     const list = container.querySelector(`[id="stage-models-${id}"]`);

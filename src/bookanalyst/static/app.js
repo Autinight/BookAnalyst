@@ -1,4 +1,5 @@
-import { addProvider, readConnections, refreshConnectionChoices, connectionName } from "./connections.js";
+import { addProvider, readConnections, refreshConnectionChoices, connectionName, selectProvider, updateProviderItem, validateSettings, providerAction, filterDiscovered } from "./connections.js";
+import { loadUsage } from "./provider-usage.js";
 import { api, setToken, escape as e } from "./api.js";
 import * as views from "./views.js";
 import * as templateUI from "./templates.js";
@@ -14,11 +15,13 @@ let data,
   pollTimer,
   contentController;
 let requestsOffset = 0, requestsSequence = 0;
-const libraryState = { view: "list", query: "", sort: "recent", trash: false };
-try { if (localStorage.getItem("bookanalyst.library.view") === "grid") libraryState.view = "grid"; } catch {}
+const libraryState = { view: "grid", query: "", sort: "recent", trash: false };
+try { const saved = localStorage.getItem("bookanalyst.library.view"); if (["grid", "list"].includes(saved)) libraryState.view = saved; } catch {}
 let tasks = [],
   pageTaskState = "",
   refreshTimer;
+let uploading = false;
+if (new URLSearchParams(location.search).has("desktop")) $("#app-mode").textContent = "桌面工作台";
 function toast(text) {
   $("#toast").textContent = text;
   $("#toast").hidden = false;
@@ -29,17 +32,29 @@ async function bootstrap() {
   data = await api("/api/bootstrap");
   setToken(data.token);
 }
-async function navigate(target, id) {
+async function navigate(target, id, fromHistory = false) {
   imageUI.leave();
   const version = ++routeVersion;
   clearTimeout(pollTimer);
   contentController?.abort();
   route = target;
+  document.body.classList.remove("reader-focused");
+  document.body.dataset.route = target;
+  if (!fromHistory) {
+    const url = new URL(location.href);
+    url.searchParams.delete("run");
+    url.hash = target === "run" ? `run/${id}` : target === "images" && id ? `images/${id}` : target;
+    if (url.href !== location.href) history.pushState(null, "", url);
+  }
   run = null;
   requestsOffset = 0;
   document
     .querySelectorAll("[data-nav]")
-    .forEach((x) => x.classList.toggle("active", x.dataset.nav === target));
+    .forEach((x) => {
+      const active = x.dataset.nav === (target === "run" ? "runs" : target);
+      x.classList.toggle("active", active);
+      if (active) x.setAttribute("aria-current", "page"); else x.removeAttribute("aria-current");
+    });
   $("#breadcrumb").textContent = {
     library: "书库",
     templates: "TeX 模板",
@@ -48,6 +63,8 @@ async function navigate(target, id) {
     settings: "模型设置",
     run: "文献转换",
   }[target];
+  $("#main").innerHTML = '<div class="loading" role="status">正在加载工作台…</div>';
+  try {
   if (target === "templates") {
     const templates = await api("/api/templates");
     if (version !== routeVersion) return;
@@ -57,6 +74,7 @@ async function navigate(target, id) {
     if (version !== routeVersion) return;
     settings = result;
     $("#main").innerHTML = views.settings(settings, data.model_stages);
+    void loadUsage();
     void loadStageModelChoices($("#settings-form"), settings);
   } else if (target === "run") {
     const result = await api(`/api/runs/${id}/status`);
@@ -78,6 +96,10 @@ async function navigate(target, id) {
     if (target === "images") return await imageUI.mount(data, id);
     $("#main").innerHTML =
       target === "library" ? views.library(data, libraryState) : views.runs(data);
+  }
+  } catch (error) {
+    if (version !== routeVersion) return;
+    $("#main").innerHTML = `<div class="empty" role="alert"><h2>暂时无法加载</h2><p>${e(error.message)}</p><button id="retry-page">重新加载</button></div>`;
   }
 }
 function renderLibrary() {
@@ -125,6 +147,8 @@ function updateStatus() {
     done = counts.PASSED || 0,
     total = Object.values(counts).reduce((a, b) => a + b, 0);
   $("#progress-text").textContent = total ? `${done} / ${total} 批完成` : "";
+  $("#run-progress").value = total ? done / total * 100 : 0;
+  $("#run-progress").hidden = !total;
   $("#usage").textContent =
     `LLM ${run.usage?.llm || 0} 次${run.pages_per_task ? ` · 每批 ${run.pages_per_task} 页 · 并发 ${run.concurrency}` : ""}`;
   for (const [id, state] of Object.entries(run.stages || {})) {
@@ -209,12 +233,14 @@ async function loadPage(preserveInput = false) {
     });
   }
   $("#page-tex").textContent = "正在读取本页…";
+  $("#copy-tex").disabled = true;
   try {
     const result = await api(`/api/runs/${id}/content?page=${wanted}`, {
       signal: contentController.signal,
     });
     if (version !== routeVersion || page !== wanted) return;
     $("#page-tex").textContent = result.tex || "本页尚未转换完成。";
+    $("#copy-tex").disabled = !result.tex;
     $("#page-state").textContent = views.stateNames[result.task?.state] || "";
   } catch (error) {
     if (error.name !== "AbortError") toast(error.message);
@@ -273,6 +299,7 @@ function bookChanged() {
   form.elements.end_page.value = book.page_count;
 }
 async function newRun(bid) {
+  if (!data.books.length) return toast("请先导入 PDF。");
   settings = await api("/api/settings");
   const form = $("#run-form");
   form.reset();
@@ -286,9 +313,31 @@ async function newRun(bid) {
   $("#new-run").showModal();
 }
 document.addEventListener("click", async (event) => {
+  if (event.target.closest(".skip-link")) {
+    event.preventDefault();
+    $("#main").focus();
+    return;
+  }
   const button = event.target.closest("button,a[data-nav]");
   if (!button) return;
   try {
+    if (button.dataset.nav) event.preventDefault();
+    if (button.id === "retry-page") return await navigateLocation();
+    if (button.dataset.readerMode) {
+      $(".reader").dataset.readerMode = button.dataset.readerMode;
+      document.querySelectorAll("button[data-reader-mode]").forEach(b => b.setAttribute("aria-pressed", String(b === button)));
+      return;
+    }
+    if (button.id === "reader-focus") {
+      const active = document.body.classList.toggle("reader-focused");
+      button.setAttribute("aria-pressed", String(active));
+      button.textContent = active ? "退出专注" : "专注阅读";
+      return;
+    }
+    if (button.id === "copy-tex") {
+      await navigator.clipboard.writeText($("#page-tex").textContent);
+      return toast("本页 TeX 已复制");
+    }
     if (button.dataset.nav) return await navigate(button.dataset.nav);
     if (button.dataset.libraryView) {
       libraryState.view = button.dataset.libraryView;
@@ -371,6 +420,9 @@ document.addEventListener("click", async (event) => {
       return;
     }
     if (button.id === "add-provider") return addProvider($("#settings-form"), settings);
+    if (button.hasAttribute("data-usage-refresh")) return loadUsage();
+    if (button.dataset.providerSelect) return selectProvider($("#settings-form"), button.dataset.providerSelect);
+    if (route === "settings" && await providerAction(button, $("#settings-form"), settings)) return;
     if (button.hasAttribute("data-connection-check") || button.hasAttribute("data-connection-login")) {
       const card = button.closest("[data-connection-id]"), id = card.dataset.connectionId;
       const status = card.querySelector("[data-connection-status]");
@@ -402,6 +454,7 @@ document.addEventListener("click", async (event) => {
 });
 document.addEventListener("change", async (event) => {
   try {
+    if (["usage-period", "usage-view"].includes(event.target.id)) return loadUsage();
     if (event.target.id === "library-sort") {
       libraryState.sort = event.target.value;
       filterLibrary();
@@ -417,26 +470,29 @@ document.addEventListener("change", async (event) => {
       await loadPage();
     }
     if (event.target.id === "upload" && event.target.files[0]) {
-      const body = new FormData();
-      body.append("file", event.target.files[0]);
-      toast("正在保存 PDF…");
-      await api("/api/books", { method: "POST", body });
-      await navigate("library");
-      toast("PDF 已保存");
+      await uploadFiles([...event.target.files]);
       event.target.value = "";
     }
   } catch (error) {
     toast(error.message);
   }
 });
+document.addEventListener("keydown", event => {
+  if (event.key === "Enter" && event.target.hasAttribute("data-model-input")) {
+    event.preventDefault();
+    event.target.closest("[data-connection-id]").querySelector("[data-model-add]").click();
+  }
+});
 document.addEventListener("input", event => {
+  if (event.target.hasAttribute("data-model-input")) filterDiscovered(event.target);
   if (event.target.id === "run-concurrency") event.target.dataset.dirty = "true";
   if (event.target.hasAttribute("data-connection-field")) {
     const card = event.target.closest("[data-connection-id]"), id = card.dataset.connectionId;
     const field = event.target.dataset.connectionField;
-    if (["name", "enabled", "model_id"].includes(field)) {
+    if (["name", "base_url", "model_id"].includes(field)) {
       settings.connections[id][field] = event.target.type === "checkbox" ? event.target.checked : event.target.value.trim();
       card.querySelector("[data-connection-title]").textContent = connectionName(id, settings.connections[id]);
+      updateProviderItem($("#settings-form"), id, settings.connections[id]);
       refreshConnectionChoices($("#settings-form"), settings);
     }
   }
@@ -517,6 +573,8 @@ $("#run-form").onsubmit = async (event) => {
 document.addEventListener("submit", async (event) => {
   if (event.target.id !== "settings-form") return;
   event.preventDefault();
+  if (!validateSettings(event.target)) return;
+  const selectedProvider = event.target.querySelector('[data-provider-select][aria-pressed="true"]')?.dataset.providerSelect;
   const button = event.target.querySelector('[type="submit"]');
   button.disabled = true;
   try {
@@ -527,7 +585,8 @@ document.addEventListener("submit", async (event) => {
     s.image_repair_concurrency = Number(f.get("image_repair_concurrency"));
     settings = await api("/api/settings", { method: "PUT", body: s });
     if (route === "settings") {
-      $("#main").innerHTML = views.settings(settings, data.model_stages);
+      $("#main").innerHTML = views.settings(settings, data.model_stages, selectedProvider);
+      void loadUsage();
       void loadStageModelChoices($("#settings-form"), settings);
     }
     toast("模型设置已保存；已有任务点击更新模型配置后生效");
@@ -537,15 +596,62 @@ document.addEventListener("submit", async (event) => {
     button.disabled = false;
   }
 });
-const hashRoute = () => ["library", "images", "templates", "runs", "settings"].includes(location.hash.slice(1)) ? location.hash.slice(1) : "library";
-window.addEventListener("hashchange", () => navigate(hashRoute()));
+async function uploadFiles(files) {
+  if (uploading) return toast("正在导入，请稍候。");
+  const pdfs = files.filter(file => file.name.toLowerCase().endsWith(".pdf"));
+  if (!pdfs.length) return toast("请选择 PDF 文件。");
+  uploading = true;
+  let saved = 0;
+  const failures = [];
+  const version = routeVersion;
+  try {
+    for (const [index, file] of pdfs.entries()) {
+      toast(`正在导入 ${index + 1} / ${pdfs.length}：${file.name}`);
+      try {
+        const body = new FormData();
+        body.append("file", file);
+        await api("/api/books", { method: "POST", body });
+        saved++;
+      } catch (error) { failures.push(`${file.name}：${error.message}`); }
+    }
+    if (version === routeVersion) await navigate("library");
+    toast(`已导入 ${saved} 份 PDF${files.length !== pdfs.length ? "，已跳过非 PDF 文件" : ""}${failures.length ? `；${failures.join("；")}` : ""}`);
+  } finally { uploading = false; }
+}
+document.addEventListener("dragover", event => {
+  if (!event.dataTransfer.types.includes("Files")) return;
+  event.preventDefault();
+  $("[data-drop-zone]")?.classList.add("drag-over");
+});
+document.addEventListener("dragleave", event => {
+  if (!event.relatedTarget) $("[data-drop-zone]")?.classList.remove("drag-over");
+});
+document.addEventListener("drop", event => {
+  if (!event.dataTransfer.files.length) return;
+  event.preventDefault();
+  $("[data-drop-zone]")?.classList.remove("drag-over");
+  if (route === "library") void uploadFiles([...event.dataTransfer.files]).catch(error => toast(error.message));
+  else toast("请回到书库导入 PDF。");
+});
+document.addEventListener("keydown", event => {
+  if (event.key === "Escape" && document.body.classList.contains("reader-focused")) $("#reader-focus")?.click();
+});
+function navigateLocation() {
+  const [target, id] = location.hash.slice(1).split("/");
+  return navigate(["library", "images", "templates", "runs", "settings", "run"].includes(target) ? target : "library", id, true);
+}
+window.addEventListener("popstate", () => void navigateLocation());
+// Native hash links (the brand and skip link) do not use pushState.
+window.addEventListener("hashchange", () => {
+  if (location.hash === "#library" && route !== "library") void navigateLocation();
+});
 templateUI.init({ navigate, toast });
 imageUI.init({ navigate, toast });
 bootstrap()
   .then(() => {
     const id = new URLSearchParams(location.search).get("run");
-    return navigate(id ? "run" : hashRoute(), id);
+    return id ? navigate("run", id) : navigateLocation();
   })
   .catch((error) => {
-    $("#main").textContent = error.message;
+    $("#main").innerHTML = `<div class="empty" role="alert"><h2>无法连接本地服务</h2><p>${e(error.message)}</p><button onclick="location.reload()">重试连接</button></div>`;
   });

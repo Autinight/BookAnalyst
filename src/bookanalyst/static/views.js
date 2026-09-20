@@ -1,4 +1,5 @@
-import { connectionCard } from "./connections.js";
+import { connectionEditor } from "./connections.js";
+import { usageSection } from "./provider-usage.js";
 import { stageModelSettings } from "./stage-models.js";
 import { escape as e } from "./api.js";
 export const stateNames = {
@@ -99,10 +100,15 @@ export function libraryResults(data, state = {}) {
   return count + `<div class="table-wrap library-list"><table><thead><tr><th>书名</th><th>页数</th><th>大小</th><th>操作</th></tr></thead><tbody>${books.map(b => `<tr><td><a class="library-title" title="${e(b.title)}" href="/api/books/${e(b.id)}/pdf" target="_blank" rel="noopener">${e(b.title)}</a>${outputNote(b)}</td><td>${b.page_count}</td><td>${(b.size_bytes / 1048576).toFixed(1)} MB</td><td>${bookActions(b, trash, data.library_management)}</td></tr>`).join("")}</tbody></table></div>`;
 }
 export function library(data, state = {}) {
-  return head("书库", "原书、生成 PDF 和 TeX 工程统一保存在书库。", '<button data-upload class="primary">导入 PDF</button>') +
+  const active = data.runs.filter(r => r.state === "RUNNING");
+  const recent = [...active, ...data.runs.filter(r => r.state !== "RUNNING")].slice(0, 3);
+  return head("我的书库", "收集文献，读懂原页，留下可编辑的每一个公式。", '<button data-upload class="primary">＋ 导入 PDF</button>') +
+    `<section class="library-overview" aria-label="书库概览"><div class="import-panel" data-drop-zone><span class="eyebrow">PDF → LATEX</span><h2>让数学回到纸面之外。</h2><p>拖入 PDF 开始整理，或<button data-upload class="text-button">选择文件</button>。<br>转换后的 PDF 与 TeX 工程，随时回到书库查阅。</p><div class="paper-mark" aria-hidden="true">∫<small>f(x) dx</small></div></div><div class="library-stats"><div><strong>${data.books.length}</strong><span>收藏文献</span></div><div><strong>${data.books.filter(b => b.result).length}</strong><span>已保存成果</span></div><button data-nav="runs"><strong>${active.length}</strong><span>正在运行 <span aria-hidden="true">↗</span></span></button></div></section>
+    <div class="section-heading"><h2>全部文献</h2><span>原书 · PDF · TeX</span></div>` +
     `<div class="library-toolbar"><div class="segmented" aria-label="书籍范围"><button data-library-trash="false" aria-pressed="${!state.trash}">全部书籍</button><button data-library-trash="true" aria-pressed="${Boolean(state.trash)}">回收站${data.deleted_books?.length ? ` · ${data.deleted_books.length}` : ""}</button></div><input id="library-search" type="search" placeholder="搜索书名…" aria-label="搜索书名" value="${e(state.query || "")}"><select id="library-sort" aria-label="书籍排序"><option value="recent"${picked("recent", state.sort || "recent")}>最近导入</option><option value="title"${picked("title", state.sort)}>书名</option><option value="pages"${picked("pages", state.sort)}>页数从多到少</option></select><div class="segmented" aria-label="书库布局"><button data-library-view="list" aria-pressed="${state.view !== "grid"}">列表</button><button data-library-view="grid" aria-pressed="${state.view === "grid"}">卡片</button></div></div>
     ${data.library_management ? "" : '<p class="hint">紧凑布局已可用。管理功能将在后台任务结束、服务更新后启用。</p>'}
     <div id="library-results">${libraryResults(data, state)}</div>
+    ${recent.length ? `<section class="recent-runs"><div class="section-heading"><h2>最近任务</h2><button data-nav="runs" class="text-button">查看全部 ↗</button></div>${runRows(recent)}</section>` : `<section class="getting-started"><span>01 <b>导入文献</b></span><span>02 <button data-nav="settings" class="text-button">配置模型</button></span><span>03 <b>选择页码，开始转换</b></span></section>`}
     <dialog id="book-dialog" aria-labelledby="book-dialog-title"><form id="book-form"><div class="row"><h2 id="book-dialog-title">管理书籍</h2><button type="button" data-book-close aria-label="关闭">×</button></div><p id="book-dialog-description"></p><label id="book-title-label">书名<input name="title" maxlength="300" required></label><p id="book-error" class="error" role="alert"></p><div class="row end"><button type="button" data-book-close>取消</button><button id="book-submit" type="submit" class="primary">保存</button></div></form></dialog>`;
 }
 export function runs(data) {
@@ -119,7 +125,7 @@ export function runView(r, stages, liveConcurrency = false) {
       `<button id="retain-result"${r.state === "COMPLETED" ? "" : " hidden"}>保存到书库</button><a class="button" href="/api/runs/${r.id}/export">下载 TeX 工程</a><a class="button" id="result-pdf" href="/api/runs/${r.id}/pdf" target="_blank" rel="noopener">查看输出 PDF</a>`,
     ) +
     '<p id="result-save-note" class="hint" role="status">结果只保留在任务中，不自动更新书库。编译完成后可预览，再点击“保存到书库”设为书籍当前版本；旧版文件保留。</p>' +
-    `<section class="run-status"><div class="row"><div id="status-badge">${badge(r.state)}</div><span id="progress-text"></span><span id="usage" class="muted"></span><div class="spacer"></div><button id="resume" class="primary">开始 / 恢复</button><button id="retry-unknown" title="保留已有成果，重新提交未返回结果的请求；上游可能重复计费。">重试未返回请求</button><button id="pause">暂停</button></div>${
+    `<section class="run-status"><div class="row"><div id="status-badge">${badge(r.state)}</div><span id="progress-text"></span><span id="usage" class="muted"></span><div class="spacer"></div><button id="resume" class="primary">开始 / 恢复</button><button id="retry-unknown" title="保留已有成果，重新提交未返回结果的请求；上游可能重复计费。">重试未返回请求</button><button id="pause">暂停</button></div><progress id="run-progress" max="100" value="0" aria-label="转换批次完成进度"></progress>${
       r.legacy
         ? ""
         : `<div class="stages">${Object.entries(stages).filter(([id]) => !["template", "manual_layout"].includes(r.kind) || id === "finish")
@@ -135,16 +141,16 @@ export function runView(r, stages, liveConcurrency = false) {
     }</section>` +
     (r.legacy
       ? '<section class="empty">旧流程记录保留，可下载已有产物。新版转换请从书库创建。</section>'
-      : `<section class="reader"><div class="reader-toolbar"><button id="previous" aria-label="上一页">←</button><label>PDF 页<input id="page-number" type="number" min="${r.pages[0]}" max="${r.pages[1]}" value="${r.pages[0]}"></label><span>/ ${r.pages[1]}</span><button id="next" aria-label="下一页">→</button><span class="spacer"></span><small id="page-state"></small></div><div class="reader-columns"><div class="page-pane"><img id="source-image" alt="当前 PDF 原页" decoding="async"></div><div class="tex-pane"><div class="pane-title">本页 TeX <span>按需加载</span></div><pre id="page-tex">等待选择页面</pre></div></div></section><details id="batch-details"><summary>批次进度</summary><div id="batches" class="batch-grid"></div></details>`) +
+      : `<section class="reader" data-reader-mode="split"><div class="reader-toolbar"><button id="previous" aria-label="上一页">←</button><label>PDF 页<input id="page-number" type="number" min="${r.pages[0]}" max="${r.pages[1]}" value="${r.pages[0]}"></label><span>/ ${r.pages[1]}</span><button id="next" aria-label="下一页">→</button><span class="spacer"></span><small id="page-state"></small><div class="segmented" aria-label="阅读布局"><button data-reader-mode="source" aria-pressed="false">原页</button><button data-reader-mode="split" aria-pressed="true">对照</button><button data-reader-mode="tex" aria-pressed="false">TeX</button></div><button id="reader-focus" aria-pressed="false">专注阅读</button></div><div class="reader-columns"><div class="page-pane"><img id="source-image" alt="当前 PDF 原页" decoding="async"></div><div class="tex-pane"><div class="pane-title">本页 TeX <button id="copy-tex" class="text-button" disabled>复制</button></div><pre id="page-tex">等待选择页面</pre></div></div></section><details id="batch-details"><summary>批次进度</summary><div id="batches" class="batch-grid"></div></details>`) +
     `<details id="requests-details"><summary>请求与用量</summary><div id="requests-content"></div></details>`
   );
 }
-export function settings(s, stages) {
+export function settings(s, stages, selectedProvider) {
   return head("模型设置", "分别设置各阶段的模型、思考强度与连接。") +
-    `<form id="settings-form">${stageModelSettings(s, stages)}
-      <div class="row"><h2>模型连接</h2><button type="button" id="add-provider">添加 API 供应商</button></div>
-      <p class="hint">可添加多个供应商，直接修改供应商名称即可重命名。填写后点击“保存设置”。</p>
-      <div class="settings-grid" id="connection-cards">${Object.entries(s.connections).map(([id, conn]) => connectionCard(id, conn)).join("")}</div>
-      <p id="settings-error" class="error" role="alert"></p><button type="submit" class="primary">保存设置</button>
-    </form>`;
+    `<form id="settings-form" novalidate>
+      <div class="section-heading"><h2>模型供应商</h2><span>选择供应商，编辑连接配置</span></div>
+      ${connectionEditor(s, selectedProvider)}
+      ${stageModelSettings(s, stages)}
+      <div class="settings-actions"><div><p id="settings-error" class="error" role="alert"></p><span class="hint">修改后统一保存</span></div><button type="submit" class="primary">保存设置</button></div>
+    </form>${usageSection()}`;
 }
