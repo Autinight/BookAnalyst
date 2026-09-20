@@ -53,11 +53,13 @@ def event_activity(event):
     return ""
 
 
-async def repair_project(providers, run, project, feedback, instructions, binding=None):
+async def repair_project(providers, run, project, feedback, instructions, binding=None, purpose=None):
     store = providers.store
+    purpose = purpose or ("image_repair" if run.get("image_repair", {}).get("mode") == "special"
+                          else "template_apply" if run.get("kind") == "template" else "compile_repair")
     if binding is None:
         from .model_config import request_run
-        run = await request_run(providers, run["id"], "template_apply" if run.get("kind") == "template" else "compile_repair")
+        run = await request_run(providers, run["id"], purpose, require_image=purpose == "image_repair")
         binding = run["config"]["model"]
     conn = providers.connection(binding["connection_id"])
     if conn["kind"] == "grok_oauth":
@@ -76,7 +78,7 @@ async def repair_project(providers, run, project, feedback, instructions, bindin
               f"Compiler result: {json.dumps(feedback, ensure_ascii=False)}\n"
               "Read the actual files as needed. Repair and compile until successful.")
     prompt += compiler_reference_policy(project)
-    metadata = dict(agent="pi", purpose="template_apply" if run.get("kind") == "template" else "compile_repair", phase="repair", role="model",
+    metadata = dict(agent="pi", purpose=purpose, phase="repair", role="model",
                     task_id="finish-project", model_id=binding["model_id"],
                     connection_id=binding["connection_id"], repair=True, attempt=1,
                     reasoning_effort=binding.get("reasoning_effort", "medium"))

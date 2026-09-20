@@ -43,13 +43,18 @@ async def repair_project(providers, run, project, feedback):
     from openai_codex import ApprovalMode
     from openai_codex.api import AsyncTurnHandle
 
+    special = run.get("kind") == "image_repair" and run.get("image_repair", {}).get("mode") == "special"
+    purpose = "image_repair" if special else "template_apply" if run.get("kind") == "template" else "compile_repair"
     instructions = COMPILER_PROMPT + template_agent_instructions(run, project)
+    if special:
+        from .image_special import special_instructions
+        instructions += special_instructions(run, project)
     store = providers.store
-    run = await request_run(providers, run["id"], "template_apply" if run.get("kind") == "template" else "compile_repair")
+    run = await request_run(providers, run["id"], purpose, require_image=special)
     binding = run["config"]["model"]
     if providers.connection(binding["connection_id"])["kind"] != "codex_chatgpt":
         from .pi_compiler import repair_project as repair_with_pi
-        return await repair_with_pi(providers, run, project, feedback, instructions, binding=binding)
+        return await repair_with_pi(providers, run, project, feedback, instructions, binding=binding, purpose=purpose)
     if not binding["model_id"]:
         raise WorkflowError("MODEL_UNAVAILABLE", "请选择 Codex 编译模型")
     sdk = await providers.codex_agent()
@@ -99,7 +104,9 @@ async def repair_project(providers, run, project, feedback):
               f"Compiler result: {json.dumps(feedback, ensure_ascii=False)}\n"
               "Read the full main.log and project files for evidence. Repair and compile until successful.")
     prompt += template_agent_instructions(run, project) + compiler_reference_policy(project)
-    metadata = dict(agent="codex", purpose="template_apply" if run.get("kind") == "template" else "compile_repair", phase="repair", role="model",
+    if special:
+        prompt += special_instructions(run, project)
+    metadata = dict(agent="codex", purpose=purpose, phase="repair", role="model",
                     task_id="finish-project", model_id=binding["model_id"],
                     connection_id=binding["connection_id"], reasoning_effort=binding.get("reasoning_effort"),
                     thread_id=thread.id, repair=True, attempt=1)
