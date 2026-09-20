@@ -34,7 +34,7 @@ from .numbering import (
     validate_reference_group,
     deferrable_duplicate_reference_ids,
 )
-from .reference_tools import ReferenceLibrary, compact_symbol, BIBLIOGRAPHY_INSTRUCTION, reference_evidence, REFERENCE_CONFIRMATION_INSTRUCTION, unconfirmed_items
+from .reference_tools import ReferenceLibrary, compact_symbol, BIBLIOGRAPHY_INSTRUCTION, reference_evidence, REFERENCE_CONFIRMATION_INSTRUCTION, DUPLICATE_REFERENCE_INSTRUCTION, unconfirmed_items
 from .reference_repair import ESCALATION_INSTRUCTION, LEGACY_ESCALATION_INSTRUCTION, PREVIOUS_ESCALATION_INSTRUCTION, validate_repair_requests, repair_groups
 from .tex import compile_tex
 from .environments import environment_report, seam_obligations
@@ -816,10 +816,13 @@ class Engine:
             escalation_payload = payload
             payload = payload | {"instruction": REFERENCE_CONFIRMATION_INSTRUCTION + payload["instruction"].replace(
                 "until this group is resolved;", "until this group is resolved or explicitly marked for confirmation;")}
+            confirmation_payload = payload
+            if group["phase"] == "duplicates":
+                payload = payload | {"instruction": payload["instruction"] + DUPLICATE_REFERENCE_INSTRUCTION}
             signature = digest(payload)
             # Preserve completed work and read evidence across prompt-only changes.
             compatible_signatures = set()
-            for version in (old_payload, previous_payload, escalation_payload, payload):
+            for version in (old_payload, previous_payload, escalation_payload, confirmation_payload, payload):
                 previous = version | {"instruction": version["instruction"].replace(
                     "Disambiguate duplicate labels as kind:number:scope; preserve kind:number. Example: equation:9.70:problems. ",
                     "For duplicate labels preserve the original kind and source number, adding a semantic chapter/section suffix where needed. ",
@@ -855,7 +858,8 @@ class Engine:
                                         "请先查找目标和相关原文；无法确认时保留原引用并说明查找依据")
 
             def finish(candidate, evidence):
-                pending = unconfirmed_items(candidate)
+                temporary = deferrable_duplicate_reference_ids(index, group, candidate)
+                pending = [item for item in unconfirmed_items(candidate) if item["id"] not in temporary]
                 self.store.task(run["id"], group["id"], "references", "REPAIR_REQUIRED" if candidate.get("repair_requests") else "DEFERRED" if pending else "PASSED",
                                 sorted({r["page"] for r in group["references"]}),
                                 {"code": "REFERENCE_UNCONFIRMED" if candidate.get("unconfirmed_references") else "BIBLIOGRAPHY_UNCONFIRMED", "message": "；".join(i["reason"] for i in pending)} if pending else None)

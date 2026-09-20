@@ -4,7 +4,7 @@ import json
 import pytest
 
 from bookanalyst.numbering import apply_symbol_edits, collect_symbols, deferrable_duplicate_reference_ids, reference_groups, symbol_problems, validate_reference_group
-from bookanalyst.reference_tools import REFERENCE_CONFIRMATION_INSTRUCTION
+from bookanalyst.reference_tools import ReferenceLibrary, REFERENCE_CONFIRMATION_INSTRUCTION, DUPLICATE_REFERENCE_INSTRUCTION
 from bookanalyst.reference_repair import validate_repair_requests
 from bookanalyst.store import WorkflowError, atomic_json, digest
 from test_bibliography_review import pending
@@ -131,6 +131,101 @@ def test_duplicate_phase_defers_only_unbound_cross_group_references():
     assert [r["id"] for r in symbol_problems(updated)["unresolved_references"]] == [ref["id"]]
     with pytest.raises(WorkflowError):
         validate_reference_group(index, group, action(unconfirmed_references=changes["unconfirmed_references"]))
+
+
+@pytest.mark.parametrize("key,reason,count", [
+    ("definition:2.1", "ambiguous_target", 2),
+    ("definition:2.1:invented", "missing_target", 0),
+    ("remark:2.1", "target_not_in_context", 1),
+])
+def test_cross_group_feedback_explains_target_failure_and_deferral(key, reason, count):
+    results = [
+        batch(1, r"See \ref{equation:2.1}. \label{equation:2.1} \label{equation:2.1}"),
+        batch(2, r"\label{definition:2.1} \label{definition:2.1} \label{remark:2.1}"),
+    ]
+    index = collect_symbols(results, [])
+    group = next(g for g in reference_groups(index, "duplicates") if g["keys"] == ["equation:2.1"])
+    labels = [{"id": i, "key": f"equation:2.1:s{n}"} for n, i in enumerate(group["label_ids"])]
+    changes = action(label_edits=labels, reference_edits=[{"id": "p1-reference-0", "key": key}])
+    with pytest.raises(WorkflowError) as exc:
+        validate_reference_group(index, group, changes)
+    details, _ = json.JSONDecoder().raw_decode(exc.value.message.split("：", 1)[1])
+    assert details["unresolved_references"] == [{
+        "id": "p1-reference-0", "key": key, "reason": reason, "target_count": count, "can_defer": True,
+    }]
+    # Leaving a label at the original key must not offer an invalid deferral.
+    changes["label_edits"] = labels[:1]
+    with pytest.raises(WorkflowError) as exc:
+        validate_reference_group(index, group, changes)
+    details, _ = json.JSONDecoder().raw_decode(exc.value.message.split("：", 1)[1])
+    assert details["unresolved_references"][0]["can_defer"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("target_kind,number", [("definition", "2.1"), ("remark", "4.6")])
+@pytest.mark.parametrize("concurrency", [1, 2])
+async def test_cross_group_dependency_retries_after_disambiguation_and_resumes(app, monkeypatch, target_kind, number, concurrency):
+    engine, run = app.state.engine, make_run(app, llm_concurrency=concurrency)
+    original_key, target_key = f"equation:{number}", f"{target_kind}:{number}"
+    results = [
+        batch(1, rf"See \ref{{{original_key}}} in the definition or remark on page 4."),
+        batch(2, rf"\label{{{original_key}}} First equation."),
+        batch(3, rf"\label{{{original_key}}} Second equation."),
+        batch(4, rf"\label{{{target_key}}} Intended target."),
+        batch(5, rf"\label{{{target_key}}} Other target."),
+    ]
+    calls, errors = [], []
+    async def generate(run, role, purpose, prompt, schema, images=()):
+        payload = json.loads(prompt)
+        calls.append(payload)
+        assert len(calls) <= 8, "Cross-group references must not loop"
+        labels = [{"id": t["id"], "key": t["key"] + f":page-{t['page']}"}
+                  for t in payload["targets"] if t["id"] in payload["editable_label_ids"]]
+        if payload["keys_to_check"] == [target_key]:
+            return action(label_edits=labels)
+        if not payload["tool_round"]:
+            return action(search=[search(target_key)])
+        if payload["phase"] == "duplicates":
+            assert DUPLICATE_REFERENCE_INSTRUCTION in payload["instruction"]
+            if "repair_feedback" not in payload:
+                # Reproduce the real run: discovered targets are still duplicated
+                # in this worker's snapshot, even if their own group has finished.
+                return action(label_edits=labels, reference_edits=[{"id": "p1-reference-0", "key": target_key}])
+            feedback = payload["repair_feedback"]
+            assert '"reason": "ambiguous_target"' in feedback["error"]
+            assert '"can_defer": true' in feedback["error"]
+            errors.append(feedback["code"])
+            return action(label_edits=labels, unconfirmed_references=[{
+                "id": "p1-reference-0", "reason": f"Searched {target_key}; page 4 is intended but its group must disambiguate first.",
+            }])
+        targets = [t for t in payload["targets"] if t["page"] == 4]
+        assert len(targets) == 1 and targets[0]["key"] == target_key + ":page-4"
+        return action(reference_edits=[{"id": "p1-reference-0", "key": targets[0]["key"]}])
+
+    monkeypatch.setattr(engine.providers, "generate", generate)
+    fixed, index = await engine.references(run, results, [], {})
+    assert errors == ["UNRESOLVED_REFERENCE"]
+    assert not any(symbol_problems(index).values())
+    assert fixed[0]["pages"][0]["tex"] == results[0]["pages"][0]["tex"].replace(original_key, target_key + ":page-4")
+    base = engine.store.directory(run["id"])
+    assert json.loads((base / "reference-review.json").read_text(encoding="utf-8")) == []
+    assert all(t["state"] == "PASSED" for t in engine.store.tasks(run["id"], "references"))
+    count = len(calls)
+    assert await engine.references(run, results, [], {}) == (fixed, index)
+    assert len(calls) == count
+    # Prompt-only changes must also reuse an old duplicate group's saved work.
+    original = next(p for p in calls if p["phase"] == "duplicates" and p["keys_to_check"] == [original_key])
+    legacy = {k: v for k, v in original.items() if k not in {"tool_round", "tool_history", "page_images"}}
+    legacy["instruction"] = legacy["instruction"].removesuffix(DUPLICATE_REFERENCE_INSTRUCTION)
+    old_index = collect_symbols(results, [])
+    group = next(g for g in reference_groups(old_index, "duplicates") if g["keys"] == [original_key])
+    for suffix in (".json", "-queries.json"):
+        path = base / "reference-groups" / (group["id"] + suffix)
+        checkpoint = json.loads(path.read_text(encoding="utf-8"))
+        checkpoint["input_hash"] = digest(legacy)
+        atomic_json(path, checkpoint)
+    await engine.reference_workers(run, old_index, [group], [], {}, ReferenceLibrary(run["source"], results, old_index))
+    assert len(calls) == count
 
 
 def test_general_deferral_does_not_hide_other_errors_or_mix_with_repair():

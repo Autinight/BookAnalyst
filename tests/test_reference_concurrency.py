@@ -94,7 +94,7 @@ async def test_failure_keeps_other_inflight_group_and_stops_queue(app, monkeypat
     monkeypatch.setattr(engine.providers, "generate", fail_one)
     with pytest.raises(WorkflowError, match="Stopped group"):
         await engine.references(run, source(4), [], {})
-    assert calls == ["lemma:1", "lemma:2"]
+    assert sorted(calls) == ["lemma:1", "lemma:2"]
     base = engine.store.directory(run["id"])
     assert len(list((base / "reference-groups").glob("*.json"))) == 1
     assert not (base / "reference-edits.json").exists()

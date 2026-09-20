@@ -31,6 +31,20 @@ REFERENCE_CONFIRMATION_INSTRUCTION = (
 )
 
 
+DUPLICATE_REFERENCE_INSTRUCTION = (
+    "In the duplicates phase, a reference's current key determines its group, not its true target kind. "
+    "For example, an equation reference may actually point to a definition or remark owned by another group. "
+    "If that target is still ambiguous or requires another group's edits, finish this group's label disambiguation "
+    "and bindings that are supported. Do not guess a new target suffix or edit read-only labels. "
+    "To defer a cross-group reference, leave its original command/key unchanged, omit it from reference_edits, "
+    "and include its occurrence ID in unconfirmed_references (or unconfirmed_bibliography for citations) "
+    "with the target evidence and dependency as the reason. This is allowed only after all labels using its "
+    "original key have been renamed, leaving no target for that original key. Query relevant targets first. "
+    "These duplicate-phase deferrals are temporary: the program automatically resolves them against fresh "
+    "targets after all duplicate groups finish; they are not final user-confirmation items. "
+)
+
+
 def unconfirmed_items(changes):
     return changes.get("unconfirmed_bibliography", []) + changes.get("unconfirmed_references", [])
 

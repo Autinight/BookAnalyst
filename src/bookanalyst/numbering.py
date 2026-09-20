@@ -409,7 +409,26 @@ def validate_reference_group(index, group, changes):
     })
     if collisions or unresolved:
         import json
+        # A rejected binding can instead retain its original key for the missing
+        # phase, provided this patch removes every label using that original key.
+        deferrable_after_revert = deferrable_duplicate_reference_ids(
+            index, group, changes | {"reference_edits": []}
+        )
+        for item in unresolved:
+            count = keys[item["key"]]
+            item.update(
+                target_count=count,
+                reason="ambiguous_target" if count > 1 else "missing_target" if count == 0 else "target_not_in_context",
+                can_defer=item["id"] in deferrable_after_revert,
+            )
+        guidance = (
+            " ambiguous_target：目标重名；missing_target：目标不存在，不要猜测后缀；"
+            "target_not_in_context：请查询该目标取得上下文。"
+            "若依赖其他组消歧且 can_defer=true，保留该引用原键，从 reference_edits 移除它，"
+            "并在 unconfirmed_references（文献用 unconfirmed_bibliography）填写原引用 ID、查找依据和跨组依赖；"
+            "同时提交本组标签消歧。程序会在重复标签处理完后自动重新解析，不作为最终待用户确认项。"
+        ) if unresolved else ""
         raise WorkflowError(
             "UNRESOLVED_REFERENCE",
-            "本组仍有异常：" + json.dumps({"duplicate_labels": collisions, "unresolved_references": unresolved}, ensure_ascii=False),
+            "本组仍有异常：" + json.dumps({"duplicate_labels": collisions, "unresolved_references": unresolved}, ensure_ascii=False) + guidance,
         )
