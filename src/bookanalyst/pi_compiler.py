@@ -61,7 +61,9 @@ async def repair_project(providers, run, project, feedback, instructions, bindin
         binding = run["config"]["model"]
     conn = providers.connection(binding["connection_id"])
     if conn["kind"] == "grok_oauth":
-        conn = await providers.grok_http_conn(binding["connection_id"], conn)
+        conn = await providers.grok_http_conn(
+            binding["connection_id"], conn, binding.get("model_id") or ""
+        )
         key = conn["_access_token"]
     else:
         key = providers.api_key(binding["connection_id"], conn) if conn.get("auth_mode") == "bearer" else ""

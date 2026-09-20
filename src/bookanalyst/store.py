@@ -7,8 +7,9 @@ from .models import STAGES, WORKFLOW_VERSION
 
 
 class WorkflowError(Exception):
-    def __init__(self, code, message, status=409, review=False, retryable=False):
+    def __init__(self, code, message, status=409, review=False, retryable=False, *, diagnostics=None):
         super().__init__(message)
+        self.diagnostics = diagnostics
         self.code, self.message, self.status, self.review, self.retryable = (
             code,
             message,

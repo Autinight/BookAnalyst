@@ -1,5 +1,6 @@
 """Grok OAuth login, token refresh, and OpenAI-compatible calls."""
 
+import json
 import time
 
 import httpx
@@ -75,9 +76,11 @@ def grok_transport(access="access-1", refresh="refresh-1", models=None):
         if path.endswith("/responses"):
             assert request.headers.get("Authorization", "").startswith("Bearer ")
             assert request.headers.get("x-xai-token-auth") == CLI_HEADERS["x-xai-token-auth"]
-            return httpx.Response(
-                200,
-                json={
+            assert request.headers.get("x-grok-model-override") == "grok-4.6"
+            assert '"stream":true' in body.replace(" ", "")
+            event = {
+                "type": "response.completed",
+                "response": {
                     "status": "completed",
                     "output": [
                         {
@@ -87,6 +90,16 @@ def grok_transport(access="access-1", refresh="refresh-1", models=None):
                     ],
                     "usage": {"input_tokens": 3, "output_tokens": 1},
                 },
+            }
+            return httpx.Response(
+                200,
+                headers={"Content-Type": "text/event-stream"},
+                content=(
+                    "event: response.completed\n"
+                    + "data: "
+                    + json.dumps(event)
+                    + "\n\n"
+                ).encode(),
             )
         return httpx.Response(404)
 

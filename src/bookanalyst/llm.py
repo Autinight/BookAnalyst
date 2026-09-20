@@ -9,13 +9,15 @@ import shutil
 import subprocess
 import time
 import tomllib
+from itertools import chain
 from pathlib import Path
 
 import httpx
-from jsonschema import validate, ValidationError
+from jsonschema.validators import validator_for
 from .config import secret
 from . import grok_oauth
 from .store import WorkflowError, atomic_json, digest, encode, write_async
+from .validation_feedback import schema_issues, syntax_error, validation_error
 
 REQUEST_ATTEMPTS = 5
 REQUEST_RETRY_DELAY = 2.0
@@ -23,21 +25,35 @@ REQUEST_RETRY_DELAY_MAX = 32.0
 
 
 def parse_json(text, schema):
-    candidates = [text]
+    validator_class = validator_for(schema)
+    validator_class.check_schema(schema)
+    validator = validator_class(schema)
+    candidates = [(text, "response")]
     if isinstance(text, str):
         blocks = re.findall(
             r"```(?:json)?\s*(.*?)\s*```", text, flags=re.IGNORECASE | re.DOTALL
         )
         if len(blocks) == 1:
-            candidates.insert(0, blocks[0])
-    for candidate in candidates:
+            candidates.insert(0, (blocks[0], "single_json_code_block"))
+    error = None
+    for candidate, source in candidates:
         try:
             value = json.loads(candidate)
-            validate(value, schema)
+        except json.JSONDecodeError as exc:
+            if error is None:
+                error = syntax_error(exc, source)
+            continue
+        except (ValueError, TypeError) as exc:
+            if error is None:
+                error = validation_error("json_parse", [{
+                    "code": "JSON_INPUT", "message": str(exc)[:500],
+                }], source=source)
+            continue
+        issues = iter(schema_issues(validator.iter_errors(value)))
+        first = next(issues, None)
+        if first is None:
             return value
-        except (ValueError, ValidationError, TypeError):
-            pass
-    error = WorkflowError("SCHEMA_ERROR", "模型未返回符合契约的 JSON", review=True)
+        error = validation_error("json_schema", chain([first], issues), source=source)
     error.candidate = text
     raise error from None
 
@@ -435,9 +451,9 @@ class Providers:
         self.store.put("credential", connection_id, tokens)
         return tokens
 
-    async def grok_http_conn(self, connection_id, conn):
+    async def grok_http_conn(self, connection_id, conn, model_id=""):
         token = await self.ensure_grok_access(connection_id)
-        return grok_oauth.http_connection(conn, token)
+        return grok_oauth.http_connection(conn, token, model_id)
 
     async def _grok_status(self, connection_id, conn):
         try:
@@ -677,7 +693,7 @@ class Providers:
                             )
                         elif conn["kind"] == "grok_oauth":
                             http_conn = await self.grok_http_conn(
-                                binding["connection_id"], conn
+                                binding["connection_id"], conn, binding["model_id"]
                             )
                             text, usage = await self._custom(
                                 http_conn, binding, prompt, schema, images
@@ -714,7 +730,8 @@ class Providers:
                         raise
                     if exc.code == "SCHEMA_ERROR":
                         await write_async(self.store.finish_call,
-                            call_id, "FAILED", error_code=exc.code, usage=usage
+                            call_id, "FAILED", error_code=exc.code,
+                            error_message=exc.message, usage=usage
                         )
                         raise
                     retryable = self._retryable(exc)
@@ -866,7 +883,9 @@ class Providers:
                 reports.append({"call_id": call["id"], "status": "RECOVERED"})
             except WorkflowError as exc:
                 if exc.code == "SCHEMA_ERROR":
-                    self.store.finish_call(call["id"], "FAILED", error_code=exc.code)
+                    self.store.finish_call(
+                        call["id"], "FAILED", error_code=exc.code, error_message=exc.message
+                    )
                     reports.append(
                         {"call_id": call["id"], "status": "FAILED", "reason": exc.code}
                     )
@@ -1024,26 +1043,65 @@ class Providers:
                 "model": binding["model_id"],
                 "instructions": instruction,
                 "input": [{"role": "user", "content": content}],
-                "stream": False,
+                "stream": bool(conn.get("_stream")),
                 "store": False,
             }
             payload["reasoning"] = {"effort": binding.get("reasoning_effort", "medium")}
             endpoint = "/responses"
         # Serialize the image-heavy body here, not inside client.post on the loop.
         content = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
-        return endpoint, headers | {"Content-Type": "application/json"}, content
+        headers = headers | {"Content-Type": "application/json"}
+        if payload.get("stream"):
+            headers["Accept"] = "text/event-stream"
+        return endpoint, headers, content
 
-    async def _custom(self, conn, binding, prompt, schema, images):
-        client = await self.custom_client(binding.get("connection_id"), conn)
-        endpoint, headers, content = await asyncio.to_thread(self._custom_payload, conn, binding, prompt, schema, images)
-        response = await client.post(
-            conn["base_url"].rstrip("/") + endpoint, headers=headers, content=content,
-            timeout=conn["timeout_seconds"],
-        )
-        error = self._http_error(response)
-        if error:
-            raise error
-        data = await asyncio.to_thread(response.json)
+    async def _read_responses_stream(self, response):
+        event_name = ""
+        chunks = []
+        completed = None
+        async for raw in response.aiter_lines():
+            line = raw.rstrip("\r")
+            if line == "":
+                if not chunks:
+                    event_name = ""
+                    continue
+                payload = "\n".join(chunks)
+                chunks = []
+                name = event_name
+                event_name = ""
+                if payload.strip() == "[DONE]":
+                    break
+                try:
+                    item = json.loads(payload)
+                except ValueError:
+                    continue
+                if not isinstance(item, dict):
+                    continue
+                kind = item.get("type") or name
+                if kind in ("response.completed", "response.incomplete"):
+                    completed = item.get("response") if isinstance(item.get("response"), dict) else item
+                    break
+                if isinstance(item.get("status"), str) and item.get("output") is not None:
+                    completed = item
+                    if item.get("status") == "completed":
+                        break
+                continue
+            if line.startswith(":"):
+                continue
+            if line.startswith("event:"):
+                event_name = line[6:].strip()
+            elif line.startswith("data:"):
+                chunks.append(line[5:].lstrip())
+        if not isinstance(completed, dict):
+            raise WorkflowError(
+                "RESULT_UNKNOWN",
+                "Responses 流未完整完成，未收到结束事件",
+                review=True,
+                retryable=True,
+            )
+        return completed
+
+    def _custom_result(self, conn, data):
         if conn["protocol"] == "chat_completions":
             choice = data["choices"][0]
             if choice.get("finish_reason") != "stop":
@@ -1064,3 +1122,27 @@ class Providers:
                 if c.get("type") == "output_text"
             )
         return result, data.get("usage", {"provider_inference_count": "unknown"})
+
+    async def _custom(self, conn, binding, prompt, schema, images):
+        client = await self.custom_client(binding.get("connection_id"), conn)
+        endpoint, headers, content = await asyncio.to_thread(self._custom_payload, conn, binding, prompt, schema, images)
+        url = conn["base_url"].rstrip("/") + endpoint
+        timeout = conn["timeout_seconds"]
+        if conn.get("_stream"):
+            async with client.stream("POST", url, headers=headers, content=content, timeout=timeout) as response:
+                error = self._http_error(response)
+                if error:
+                    await response.aread()
+                    raise error
+                ctype = (response.headers.get("content-type") or "").lower()
+                if "event-stream" in ctype:
+                    data = await self._read_responses_stream(response)
+                else:
+                    data = json.loads(await response.aread())
+        else:
+            response = await client.post(url, headers=headers, content=content, timeout=timeout)
+            error = self._http_error(response)
+            if error:
+                raise error
+            data = await asyncio.to_thread(response.json)
+        return self._custom_result(conn, data)

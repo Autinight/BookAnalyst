@@ -25,7 +25,7 @@ FORM_HEADERS = {
 }
 CLI_HEADERS = {
     "x-xai-token-auth": "xai-grok-cli",
-    "x-grok-client-version": "0.7.1",
+    "x-grok-client-version": "0.2.95",
     "x-grok-client-identifier": "bookanalyst",
 }
 FALLBACK_MODELS = [
@@ -232,19 +232,24 @@ def select_model(choices, model_id):
     )
 
 
-def http_connection(conn, access_token):
+def http_connection(conn, access_token, model_id=""):
+    headers = dict(CLI_HEADERS)
+    chosen = model_id or conn.get("model_id") or ""
+    if chosen:
+        headers["x-grok-model-override"] = chosen.split("/")[-1]
     return {
         "kind": "openai_compatible",
         "name": conn.get("name") or "Grok 官方订阅",
         "enabled": True,
         "base_url": API_BASE,
         "protocol": "responses",
-        "model_id": conn.get("model_id") or "",
+        "model_id": chosen or conn.get("model_id") or "",
         "auth_mode": "bearer",
         "image_support": "supported",
         "timeout_seconds": conn["timeout_seconds"],
         "_access_token": access_token,
-        "_extra_headers": dict(CLI_HEADERS),
+        "_extra_headers": headers,
+        "_stream": True,
     }
 
 
