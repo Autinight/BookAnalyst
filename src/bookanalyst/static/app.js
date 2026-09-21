@@ -1,10 +1,13 @@
-import { addProvider, readConnections, refreshConnectionChoices, connectionName, selectProvider, updateProviderItem, validateSettings, providerAction, filterDiscovered } from "./connections.js";
+import { addProvider, readConnections, selectProvider, validateSettings, providerAction, filterDiscovered, autoSaveProvider, flushProviderSaves } from "./connections.js";
+import { loadProviderAuth, refreshProviderAuth, watchProviderLogin } from "./provider-auth.js";
 import { loadUsage } from "./provider-usage.js";
 import { api, setToken, escape as e } from "./api.js";
 import * as views from "./views.js";
 import * as templateUI from "./templates.js";
 import * as imageUI from "./image-repair.js";
-import { loadStageModelChoices, readStageModels, stageConnectionChanged } from "./stage-models.js";
+import * as libraryUI from "./library-ui.js";
+import * as pdfPreview from "./pdf-preview.js";
+import { loadStageModelChoices, readStageModels, stageConnectionChanged, stageModelChanged, refreshRegisteredModels } from "./stage-models.js";
 const $ = (s) => document.querySelector(s);
 let data,
   settings,
@@ -33,6 +36,8 @@ async function bootstrap() {
   setToken(data.token);
 }
 async function navigate(target, id, fromHistory = false) {
+  pdfPreview.close(false);
+  libraryUI.leave();
   imageUI.leave();
   const version = ++routeVersion;
   clearTimeout(pollTimer);
@@ -76,6 +81,7 @@ async function navigate(target, id, fromHistory = false) {
     $("#main").innerHTML = views.settings(settings, data.model_stages);
     void loadUsage();
     void loadStageModelChoices($("#settings-form"), settings);
+    void loadProviderAuth($("#settings-form"));
   } else if (target === "run") {
     const result = await api(`/api/runs/${id}/status`);
     if (version !== routeVersion) return;
@@ -103,6 +109,7 @@ async function navigate(target, id, fromHistory = false) {
   }
 }
 function renderLibrary() {
+  libraryUI.leave();
   if (route === "library") $("#main").innerHTML = views.library(data, libraryState);
 }
 function filterLibrary() {
@@ -112,6 +119,7 @@ async function manageBook(button) {
   const action = button.dataset.bookAction, id = button.dataset.bookId;
   const book = [...data.books, ...(data.deleted_books || [])].find(b => b.id === id);
   if (!book) return;
+  if (action === "cover") return libraryUI.openCover(book);
   if (action === "images") return await navigate("images", id);
   if (action === "template") return await templateUI.openApply(book);
   if (action === "reveal" || action === "restore") {
@@ -320,6 +328,7 @@ document.addEventListener("click", async (event) => {
   }
   const button = event.target.closest("button,a[data-nav]");
   if (!button) return;
+  button.closest("[data-book-menu]")?.hidePopover();
   try {
     if (button.dataset.nav) event.preventDefault();
     if (button.id === "retry-page") return await navigateLocation();
@@ -427,6 +436,7 @@ document.addEventListener("click", async (event) => {
       const card = button.closest("[data-connection-id]"), id = card.dataset.connectionId;
       const status = card.querySelector("[data-connection-status]");
       const login = button.hasAttribute("data-connection-login");
+      if(!login && card.querySelector(".pv-oauth-status")) {await refreshProviderAuth(card);return;}
       const action = login ? "login" : settings.connections[id].kind === "openai_compatible" ? "test" : "status";
       button.disabled = true;
       try {
@@ -438,6 +448,7 @@ document.addEventListener("click", async (event) => {
           if (result.user_code) parts.push(`授权码 <code>${e(result.user_code)}</code>`);
           if (result.message) parts.push(`<small>${e(result.message)}</small>`);
           status.innerHTML = parts.join("<br>");
+          watchProviderLogin(card);
         }
         else {
           const names = (result.models || []).map(m => m.model || m.id).filter(Boolean);
@@ -462,6 +473,9 @@ document.addEventListener("change", async (event) => {
     if (event.target.name === "book_id") bookChanged();
     if (event.target.hasAttribute("data-stage-connection"))
       stageConnectionChanged(event.target, settings);
+    if (event.target.hasAttribute("data-stage-model")) stageModelChanged(event.target, settings);
+    if (event.target.matches('select[data-connection-field]'))
+      await autoSaveProvider(event.target, $("#settings-form"), settings);
     if (event.target.id === "page-number") {
       page = Math.max(
         run.pages[0],
@@ -484,23 +498,19 @@ document.addEventListener("keydown", event => {
   }
 });
 document.addEventListener("input", event => {
-  if (event.target.hasAttribute("data-model-input")) filterDiscovered(event.target);
+  if (event.target.hasAttribute("data-model-search")) filterDiscovered(event.target);
   if (event.target.id === "run-concurrency") event.target.dataset.dirty = "true";
-  if (event.target.hasAttribute("data-connection-field")) {
-    const card = event.target.closest("[data-connection-id]"), id = card.dataset.connectionId;
-    const field = event.target.dataset.connectionField;
-    if (["name", "base_url", "model_id"].includes(field)) {
-      settings.connections[id][field] = event.target.type === "checkbox" ? event.target.checked : event.target.value.trim();
-      card.querySelector("[data-connection-title]").textContent = connectionName(id, settings.connections[id]);
-      updateProviderItem($("#settings-form"), id, settings.connections[id]);
-      refreshConnectionChoices($("#settings-form"), settings);
-    }
-  }
+  if (event.target.matches("[data-connection-field],[data-provider-headers]")) event.target.dataset.providerDirty="true";
   if (event.target.id === "library-search") {
     libraryState.query = event.target.value;
     filterLibrary();
   }
 });
+document.addEventListener("focusout", event => {
+  if (route === "settings" && event.target.matches("[data-connection-field], [data-provider-headers]"))
+    void autoSaveProvider(event.target, $("#settings-form"), settings).catch(error => toast(error.message));
+});
+document.addEventListener("provider-registry-change", event => refreshRegisteredModels(event.target, settings));
 document.addEventListener("submit", async event => {
   if (event.target.id !== "book-form") return;
   event.preventDefault();
@@ -578,6 +588,7 @@ document.addEventListener("submit", async (event) => {
   const button = event.target.querySelector('[type="submit"]');
   button.disabled = true;
   try {
+    await flushProviderSaves();
     const f = new FormData(event.target), s = structuredClone(settings);
     s.connections = readConnections(event.target, settings);
     s.stage_models = readStageModels(event.target, data.model_stages);
@@ -588,6 +599,7 @@ document.addEventListener("submit", async (event) => {
       $("#main").innerHTML = views.settings(settings, data.model_stages, selectedProvider);
       void loadUsage();
       void loadStageModelChoices($("#settings-form"), settings);
+      void loadProviderAuth($("#settings-form"));
     }
     toast("模型设置已保存；已有任务点击更新模型配置后生效");
   } catch (error) {
@@ -646,7 +658,13 @@ window.addEventListener("hashchange", () => {
   if (location.hash === "#library" && route !== "library") void navigateLocation();
 });
 templateUI.init({ navigate, toast });
+pdfPreview.init();
 imageUI.init({ navigate, toast });
+libraryUI.init({ toast, refresh: async () => {
+  const version=routeVersion;
+  await bootstrap();
+  if(version===routeVersion) renderLibrary();
+} });
 bootstrap()
   .then(() => {
     const id = new URLSearchParams(location.search).get("run");

@@ -1,0 +1,77 @@
+/* Cover-first library. Covers are separate assets, never source-page thumbnails. */
+body[data-route="library"] { background: #fbfaf6; }
+body[data-route="library"] header { background: #fbfaf6; border-color: #eeede5; }
+body[data-route="library"] main { padding: 24px 48px 40px; }
+.bookshelf .page-head { margin-bottom: 20px; flex-direction: row; align-items: center; }
+.bookshelf .page-head h1 { font-family: Georgia, "Noto Serif SC", "SimSun", serif; font-size: 30px; line-height: 1.2; letter-spacing: 1px; color: #244832; margin: 0; }
+.bookshelf .library-toolbar { background: none; border: 0; padding: 0; border-radius: 0; gap: 12px; }
+.bookshelf .library-toolbar input { background: #fffefa; border: 1px solid #e7e6dc; }
+.bookshelf .library-toolbar select { background: transparent; border-color: transparent; font-size: 12px; }
+.bookshelf .segmented { background: #eeeee6; border: 0; padding: 3px; }
+.bookshelf .segmented button { border: 0; background: transparent; font-size: 12px; padding: 8px 12px; }
+.bookshelf .segmented button[aria-pressed="true"] { background: #315d43; color: white; box-shadow: none; }
+.bookshelf .library-count { margin: 14px 0 16px; color: #8a9085; }
+.library-shelf { --cover-width: clamp(120px, 17vh, 160px); display: grid; grid-template-columns: repeat(auto-fill, minmax(calc(var(--cover-width) + 32px), 1fr)); column-gap: 16px; row-gap: 28px; }
+.shelf-book { min-width: 0; width: var(--cover-width); max-width: 100%; justify-self: center; }
+.shelf-cover { display: block; position: relative; width: 100%; aspect-ratio: 5 / 7; border-radius: 2px 4px 4px 2px; text-decoration: none; background: #f1efe5; box-shadow: 2px 4px 8px #363d2420, 0 1px 2px #20281812; transition: transform .18s, box-shadow .18s; overflow: hidden; }
+.shelf-cover:hover { transform: translateY(-4px); box-shadow: 3px 10px 18px #363d2425; }
+.shelf-cover img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #f7f5ed; }
+.cover-placeholder { display: flex; align-items: center; justify-content: center; height: 100%; width: 100%; padding: 16% 12% 18% 15%; color: #f5f0dc; background: #2c503d; text-align: center; position: relative; }
+.cover-placeholder::before { content: ""; position: absolute; top: 0; bottom: 0; left: 3%; width: 3px; border-left: 1px solid #ffffff20; border-right: 1px solid #00000015; }
+.cover-placeholder strong { font: 500 15px/1.45 Georgia, "SimSun", serif; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 5; -webkit-box-orient: vertical; overflow: hidden; }
+.cover-tone-1 { background: #6b3438; color: #f6edda; }
+.cover-tone-2 { background: #2e465b; color: #eef0e9; }
+.cover-tone-3 { background: #b49a59; color: #2f3428; }
+.cover-tone-4 { background: #ede8d9; color: #46533d; }
+.has-cover .cover-placeholder { visibility: hidden; }
+.shelf-book-title { display: flex; align-items: flex-start; gap: 3px; margin-top: 8px; }
+.shelf-book-title h2 { font-size: 12px; font-weight: 500; line-height: 1.45; height: 2.9em; margin: 0; flex: 1; min-width: 0; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.book-menu-trigger { width: 27px; height: 27px; padding: 0; font-size: 23px; line-height: 22px; color: #657260; border: 0; background: transparent; flex-shrink: 0; border-radius: 5px; }
+.book-menu-trigger:hover { background: #e6ecdf; }
+.shelf-metadata { display: flex; align-items: center; justify-content: space-between; gap: 6px; font-size: 10px; line-height: 16px; color: #858a80; margin-top: 4px; }
+.shelf-metadata .shelf-state { font-size: 10px; }
+.shelf-state { color: #898e86; font-size: 11px; white-space: nowrap; }
+.shelf-state::before { content: ""; display: inline-block; width: 6px; height: 6px; background: #a5aa9f; border-radius: 50%; margin-right: 6px; }
+.shelf-state.complete { color: #36664a; }
+.shelf-state.complete::before { background: #518064; }
+.shelf-state.processing { color: #487495; }
+.shelf-state.processing::before { background: #679bbc; }
+.shelf-drop-hint { text-align: center; color: #a2a798; font-size: 11px; padding: 34px 0 0; }
+.bookshelf.drag-over { outline-offset: 12px; background: #f1f5e9; }
+.shelf-empty { padding: 80px 18px; text-align: center; color: #83907f; }
+.shelf-empty button { display: block; margin: 20px auto 0; }
+.shelf-task-strip { display: flex; align-items: center; gap: 18px; margin-top: 34px; border: 1px solid #e5e8dd; padding: 12px 16px; background: #fdfcf8; border-radius: 8px; font-size: 12px; }
+.shelf-task-strip > span:nth-child(2) { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.shelf-list-row { display: flex; align-items: center; gap: 22px; padding: 16px 4px; border-bottom: 1px solid #e8e9df; }
+.shelf-list-row .shelf-cover { width: 46px; flex-shrink: 0; }
+.shelf-list-row .cover-placeholder { padding: 12% 8%; }
+.shelf-list-row .cover-placeholder strong { font-size: 8px; -webkit-line-clamp: 4; }
+.shelf-list-title { flex: 1; min-width: 0; }
+.shelf-list-title h2 { font-size: 14px; margin: 0; overflow-wrap: anywhere; }
+.shelf-list-title p { color: #8a9084; font-size: 11px; margin: 6px 0 0; }
+.book-menu { position: fixed; inset: auto; margin: 0; border: 1px solid #dedfd3; border-radius: 9px; padding: 6px; width: 190px; max-height: min(75vh, 490px); overflow-y: auto; background: #fffefa; box-shadow: 0 8px 32px #25352225; color: #334d39; }
+.book-menu:popover-open { display: flex; flex-direction: column; }
+.book-menu a, .book-menu button { display: block; text-align: left; font-size: 12px; padding: 9px 12px; border: 0; background: transparent; border-radius: 5px; text-decoration: none; color: inherit; }
+.book-menu a:hover, .book-menu button:hover { background: #eff2e8; }
+.book-menu .danger { color: #a34c43; }
+.book-menu .danger:hover { background: #faf0e8; }
+.book-menu hr { width: 100%; border: 0; border-top: 1px solid #ecece3; margin: 4px 0; }
+#cover-dialog { width: min(480px, calc(100vw - 32px)); max-height: 92vh; overflow: auto; }
+#cover-book-title { color: var(--muted); overflow-wrap: anywhere; font-size: 12px; }
+.cover-editor-preview { width: 150px; aspect-ratio: 5 / 7; margin: 18px auto; background: #f2f0e8; box-shadow: 1px 3px 9px #25352222; }
+.cover-editor-preview img { width: 100%; height: 100%; object-fit: contain; }
+.cover-editor-preview .cover-placeholder strong { font-size: 17px; }
+.cover-file-label { font-size: 12px; }
+.cover-file-label input { width: 100%; font-size: 12px; }
+@media (max-width: 700px) {
+  body[data-route="library"] main { padding: 24px 20px 40px; }
+  .library-shelf { --cover-width: 140px; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); column-gap: 24px; row-gap: 24px; }
+  .bookshelf .page-head h1 { font-size: 27px; }
+  .bookshelf .page-head { gap: 12px; }
+  .bookshelf .page-head > button { font-size: 12px; padding: 9px 12px; }
+  .bookshelf .library-toolbar { gap: 8px; }
+  .shelf-book-title h2 { font-size: 12px; }
+  .shelf-list-row { gap: 12px; }
+  .shelf-list-row .shelf-state { display: none; }
+  .shelf-task-strip { gap: 10px; }
+}

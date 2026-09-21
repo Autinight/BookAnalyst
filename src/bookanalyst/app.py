@@ -23,6 +23,8 @@ from .image_repair import register_image_routes
 from .library_outputs import output_directory, retained_directory, public_result
 from .model_config import MODEL_STAGES, settings_models
 from .provider_usage import usage_ledger
+from .book_covers import public_cover, register_cover_routes
+from .pdf_preview import register_pdf_preview_routes
 
 
 def create_app(workspace=None, data_dir=None):
@@ -104,6 +106,8 @@ def create_app(workspace=None, data_dir=None):
         )
 
     register_library_routes(app, store)
+    register_cover_routes(app, store)
+    register_pdf_preview_routes(app, store)
     register_template_routes(app, store, engine)
     register_image_routes(app, store, engine)
 
@@ -113,7 +117,7 @@ def create_app(workspace=None, data_dir=None):
 
     def books(deleted=False):
         return [
-            {k: b[k] for k in ("id", "title", "page_count", "size_bytes")} | {"result": public_result(b)}
+            {k: b[k] for k in ("id", "title", "page_count", "size_bytes")} | {"result": public_result(b), "cover": public_cover(b)}
             for b in store.list("book", limit=10000)
             if bool(b.get("deleted")) == deleted
         ]

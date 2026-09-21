@@ -118,6 +118,37 @@ def test_usage_normalizes_native_protocols(app):
         assert (row["input"], row["output"], row["cached"]) == (11, 7, 2)
 
 
+def test_registered_capabilities_round_trip_and_reject_invalid_types(app):
+    model = dict(id="registered", name="注册模型", context=262144, max_output=65536,
+                 image=True, video=False, audio=True, reasoning=True, xhigh=True, max=False)
+    with client_for(app) as client:
+        settings = client.get("/api/settings").json()
+        settings["connections"]["custom_api"].update(base_url="http://models.test/v1", models=[model])
+        assert client.put("/api/settings", json=settings).status_code == 200
+        assert client.get("/api/settings").json()["connections"]["custom_api"]["models"] == [model]
+        for field in ("video", "audio", "xhigh", "max"):
+            bad = copy.deepcopy(settings)
+            bad["connections"]["custom_api"]["models"][0][field] = "true"
+            assert client.put("/api/settings", json=bad).status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_registered_reasoning_limits_apply_to_requests(app):
+    store = app.state.store
+    settings = store.get("settings", "main")
+    conn = settings["connections"]["custom_api"]
+    conn.update(base_url="http://models.test/v1", enabled=True, auth_mode="none", model_id="limited",
+                models=[dict(id="limited", reasoning=True, xhigh=False, max=False)])
+    store.put("settings", "main", settings)
+    for effort in ("xhigh", "max"):
+        with pytest.raises(WorkflowError, match="注册信息"):
+            await app.state.engine.providers.resolve(dict(connection_id="custom_api", model_id="limited", reasoning_effort=effort))
+    await app.state.engine.providers.resolve(dict(connection_id="custom_api", model_id="limited", reasoning_effort="high"))
+    conn["models"] = [dict(id="limited")]
+    store.put("settings", "main", settings)
+    await app.state.engine.providers.resolve(dict(connection_id="custom_api", model_id="limited", reasoning_effort="max"))
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("protocol,path", [("anthropic", "/v1/messages"), ("gemini", "/v1/models/pi-test-model:streamGenerateContent")])
 async def test_native_protocol_reaches_pi_compiler(app, protocol, path):
@@ -167,4 +198,3 @@ async def test_native_protocol_reaches_pi_compiler(app, protocol, path):
     finally:
         server.shutdown()
         server.server_close()
-

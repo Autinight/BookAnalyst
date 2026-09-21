@@ -123,14 +123,14 @@ def validate_settings(value):
             if not isinstance(model, dict) or not isinstance(model.get("id"), str) or not model["id"].strip() or model["id"] in ids:
                 raise WorkflowError("INVALID_CONFIG", "模型 ID 不能为空或重复", 422)
             ids.add(model["id"])
-            if set(model) - {"id", "name", "context", "max_output", "image", "reasoning"}:
+            if set(model) - {"id", "name", "context", "max_output", "image", "video", "audio", "reasoning", "xhigh", "max"}:
                 raise WorkflowError("INVALID_CONFIG", "模型字段无效", 422)
             if "name" in model and not isinstance(model["name"], str):
                 raise WorkflowError("INVALID_CONFIG", "模型名称无效", 422)
             for field in ("context", "max_output"):
                 if field in model and (type(model[field]) is not int or model[field] < 1):
                     raise WorkflowError("INVALID_CONFIG", "模型长度必须为正整数", 422)
-            for field in ("image", "reasoning"):
+            for field in ("image", "video", "audio", "reasoning", "xhigh", "max"):
                 if field in model and type(model[field]) is not bool:
                     raise WorkflowError("INVALID_CONFIG", "模型能力必须为布尔值", 422)
         if (

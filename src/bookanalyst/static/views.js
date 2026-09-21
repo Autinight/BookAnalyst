@@ -69,48 +69,7 @@ export function runRows(runs) {
     ? `<div class="table-wrap"><table><thead><tr><th>文献</th><th>页面</th><th>状态</th><th></th></tr></thead><tbody>${runs.map((r) => `<tr><td>${e(r.title)}<small>${r.id.slice(0, 8)} · ${r.kind === "image_repair" ? "图片修复" : r.kind === "manual_layout" ? "公式排版修复" : r.kind === "template" ? "模板重排 · " + e(r.template?.name) : r.legacy ? "历史流程" : "视觉转换"}</small></td><td>${r.pages.join("–")}</td><td>${badge(r.state)}</td><td><button data-run="${r.id}">打开</button></td></tr>`).join("")}</tbody></table></div>`
     : `<div class="empty">尚未创建转换任务</div>`;
 }
-const libraryIcons = {
-  folder: '<path d="M3 7V5h6l2 2h10v12H3z"/><path d="M9 13h7m-3-3 3 3-3 3"/>',
-  edit: '<path d="m14 4 6 6M4 20l5-1L20 8a2 2 0 0 0-5-5L4 14z"/>',
-  trash: '<path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7"/>',
-};
-const libraryIcon = (name) => `<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${libraryIcons[name]}</svg>`;
-function outputNote(book) {
-  return book.result ? `<small class="book-output-note">已保留 · 原书 ${book.result.pages.join("–")} 页 → PDF ${book.result.pdf_pages} 页${book.result.template_name ? ` · ${e(book.result.template_name)}` : ""}${book.result.review_count ? ` · <a href="/api/books/${e(book.id)}/reference-review" target="_blank" rel="noopener">引用待确认 ${book.result.review_count} 条</a>` : ""}</small>` : "";
-}
-function bookActions(book, trash, supported) {
-  const unavailable = supported ? "" : ' disabled title="当前服务更新后可用"';
-  return `<div class="book-actions"><span class="book-open-actions">
-    ${trash ? `<button data-book-action="restore" data-book-id="${e(book.id)}"${unavailable}>恢复</button>` : `<button data-new="${e(book.id)}" class="primary">转换</button>`}
-    <a class="button" href="/api/books/${e(book.id)}/pdf" target="_blank" rel="noopener" aria-label="查看 ${e(book.title)} 的${book.result ? "生成" : "原书"} PDF" title="${book.result ? "打开已保留的生成 PDF" : "打开原书 PDF"}">PDF ↗</a>
-    ${book.result ? `<a class="button" href="/api/books/${e(book.id)}/source" target="_blank" rel="noopener">原书 ↗</a><a class="button" href="/api/books/${e(book.id)}/project" title="下载已保留的 TeX 工程">TeX ↓</a>${trash ? "" : `<button data-book-action="images" data-book-id="${e(book.id)}">修图片</button><button data-book-action="template" data-book-id="${e(book.id)}">换模板</button>`}` : ""}
-    </span><span class="book-manage-actions"><button class="book-icon" data-book-action="reveal" data-book-id="${e(book.id)}" aria-label="在资源管理器中显示 ${e(book.title)}"${supported ? ' title="在资源管理器中显示"' : unavailable}>${libraryIcon("folder")}</button>
-    ${trash ? "" : `<button class="book-icon" data-book-action="rename" data-book-id="${e(book.id)}" aria-label="重命名 ${e(book.title)}"${supported ? ' title="重命名"' : unavailable}>${libraryIcon("edit")}</button><button class="book-icon danger" data-book-action="delete" data-book-id="${e(book.id)}" aria-label="删除 ${e(book.title)}"${supported ? ' title="移入回收站"' : unavailable}>${libraryIcon("trash")}</button>`}
-  </span></div>`;
-}
-export function libraryResults(data, state = {}) {
-  const trash = state.trash || false, query = (state.query || "").trim().toLocaleLowerCase();
-  let books = [...(trash ? data.deleted_books || [] : data.books)];
-  if (query) books = books.filter(b => b.title.toLocaleLowerCase().includes(query));
-  if (state.sort === "title") books.sort((a, b) => a.title.localeCompare(b.title, "zh-CN", { numeric: true }));
-  if (state.sort === "pages") books.sort((a, b) => b.page_count - a.page_count);
-  const count = `<p class="library-count" role="status">${books.length} 本${query ? "匹配书籍" : ""}${trash ? " · 回收站中的原 PDF 和已有任务保留" : ""}</p>`;
-  if (!books.length) return count + `<div class="empty">${query ? "没有匹配的书籍，试试其他书名。" : trash ? "回收站为空" : '书库中还没有书籍。<button data-upload>导入 PDF</button>'}</div>`;
-  if (state.view === "grid") return count + `<div class="library-cards">${books.map(b => `<article class="library-card"><div class="library-card-heading"><a class="library-cover" href="/api/books/${e(b.id)}/pdf" target="_blank" rel="noopener"><img loading="lazy" decoding="async" src="/api/books/${e(b.id)}/image?page=1&dpi=55" alt="${e(b.title)}首页"></a><div><h2 title="${e(b.title)}">${e(b.title)}</h2><p>${b.page_count} 页 · ${(b.size_bytes / 1048576).toFixed(1)} MB</p>${outputNote(b)}</div></div>${bookActions(b, trash, data.library_management)}</article>`).join("")}</div>`;
-  return count + `<div class="table-wrap library-list"><table><thead><tr><th>书名</th><th>页数</th><th>大小</th><th>操作</th></tr></thead><tbody>${books.map(b => `<tr><td><a class="library-title" title="${e(b.title)}" href="/api/books/${e(b.id)}/pdf" target="_blank" rel="noopener">${e(b.title)}</a>${outputNote(b)}</td><td>${b.page_count}</td><td>${(b.size_bytes / 1048576).toFixed(1)} MB</td><td>${bookActions(b, trash, data.library_management)}</td></tr>`).join("")}</tbody></table></div>`;
-}
-export function library(data, state = {}) {
-  const active = data.runs.filter(r => r.state === "RUNNING");
-  const recent = [...active, ...data.runs.filter(r => r.state !== "RUNNING")].slice(0, 3);
-  return head("我的书库", "收集文献，读懂原页，留下可编辑的每一个公式。", '<button data-upload class="primary">＋ 导入 PDF</button>') +
-    `<section class="library-overview" aria-label="书库概览"><div class="import-panel" data-drop-zone><span class="eyebrow">PDF → LATEX</span><h2>让数学回到纸面之外。</h2><p>拖入 PDF 开始整理，或<button data-upload class="text-button">选择文件</button>。<br>转换后的 PDF 与 TeX 工程，随时回到书库查阅。</p><div class="paper-mark" aria-hidden="true">∫<small>f(x) dx</small></div></div><div class="library-stats"><div><strong>${data.books.length}</strong><span>收藏文献</span></div><div><strong>${data.books.filter(b => b.result).length}</strong><span>已保存成果</span></div><button data-nav="runs"><strong>${active.length}</strong><span>正在运行 <span aria-hidden="true">↗</span></span></button></div></section>
-    <div class="section-heading"><h2>全部文献</h2><span>原书 · PDF · TeX</span></div>` +
-    `<div class="library-toolbar"><div class="segmented" aria-label="书籍范围"><button data-library-trash="false" aria-pressed="${!state.trash}">全部书籍</button><button data-library-trash="true" aria-pressed="${Boolean(state.trash)}">回收站${data.deleted_books?.length ? ` · ${data.deleted_books.length}` : ""}</button></div><input id="library-search" type="search" placeholder="搜索书名…" aria-label="搜索书名" value="${e(state.query || "")}"><select id="library-sort" aria-label="书籍排序"><option value="recent"${picked("recent", state.sort || "recent")}>最近导入</option><option value="title"${picked("title", state.sort)}>书名</option><option value="pages"${picked("pages", state.sort)}>页数从多到少</option></select><div class="segmented" aria-label="书库布局"><button data-library-view="list" aria-pressed="${state.view !== "grid"}">列表</button><button data-library-view="grid" aria-pressed="${state.view === "grid"}">卡片</button></div></div>
-    ${data.library_management ? "" : '<p class="hint">紧凑布局已可用。管理功能将在后台任务结束、服务更新后启用。</p>'}
-    <div id="library-results">${libraryResults(data, state)}</div>
-    ${recent.length ? `<section class="recent-runs"><div class="section-heading"><h2>最近任务</h2><button data-nav="runs" class="text-button">查看全部 ↗</button></div>${runRows(recent)}</section>` : `<section class="getting-started"><span>01 <b>导入文献</b></span><span>02 <button data-nav="settings" class="text-button">配置模型</button></span><span>03 <b>选择页码，开始转换</b></span></section>`}
-    <dialog id="book-dialog" aria-labelledby="book-dialog-title"><form id="book-form"><div class="row"><h2 id="book-dialog-title">管理书籍</h2><button type="button" data-book-close aria-label="关闭">×</button></div><p id="book-dialog-description"></p><label id="book-title-label">书名<input name="title" maxlength="300" required></label><p id="book-error" class="error" role="alert"></p><div class="row end"><button type="button" data-book-close>取消</button><button id="book-submit" type="submit" class="primary">保存</button></div></form></dialog>`;
-}
+export { library, libraryResults } from "./library-view.js";
 export function runs(data) {
   return (
     head("运行记录", "完成的批次即时保存，恢复时继续处理未完成部分。") +
@@ -122,7 +81,7 @@ export function runView(r, stages, liveConcurrency = false) {
     head(
       e(r.title),
       `${r.kind === "manual_layout" ? "公式排版修复" : r.kind === "template" ? "模板重排 · " + e(r.template?.name) : r.legacy ? "历史运行" : "视觉独立转换"} · PDF ${r.pages.join("–")} 页`,
-      `<button id="retain-result"${r.state === "COMPLETED" ? "" : " hidden"}>保存到书库</button><a class="button" href="/api/runs/${r.id}/export">下载 TeX 工程</a><a class="button" id="result-pdf" href="/api/runs/${r.id}/pdf" target="_blank" rel="noopener">查看输出 PDF</a>`,
+      `<button id="retain-result"${r.state === "COMPLETED" ? "" : " hidden"}>保存到书库</button><a class="button" href="/api/runs/${r.id}/export">下载 TeX 工程</a><a class="button" id="result-pdf" href="/api/runs/${r.id}/pdf" data-pdf-preview="生成 PDF" data-pdf-title="${e(r.title)}">查看输出 PDF</a>`,
     ) +
     '<p id="result-save-note" class="hint" role="status">结果只保留在任务中，不自动更新书库。编译完成后可预览，再点击“保存到书库”设为书籍当前版本；旧版文件保留。</p>' +
     `<section class="run-status"><div class="row"><div id="status-badge">${badge(r.state)}</div><span id="progress-text"></span><span id="usage" class="muted"></span><div class="spacer"></div><button id="resume" class="primary">开始 / 恢复</button><button id="retry-unknown" title="保留已有成果，重新提交未返回结果的请求；上游可能重复计费。">重试未返回请求</button><button id="pause">暂停</button></div><progress id="run-progress" max="100" value="0" aria-label="转换批次完成进度"></progress>${
@@ -148,9 +107,9 @@ export function runView(r, stages, liveConcurrency = false) {
 export function settings(s, stages, selectedProvider) {
   return head("模型设置", "分别设置各阶段的模型、思考强度与连接。") +
     `<form id="settings-form" novalidate>
-      <div class="section-heading"><h2>模型供应商</h2><span>选择供应商，编辑连接配置</span></div>
+      <div class="section-heading provider-section-heading"><h2>模型供应商</h2></div>
       ${connectionEditor(s, selectedProvider)}
       ${stageModelSettings(s, stages)}
-      <div class="settings-actions"><div><p id="settings-error" class="error" role="alert"></p><span class="hint">修改后统一保存</span></div><button type="submit" class="primary">保存设置</button></div>
+      <div class="settings-actions"><div><p id="settings-error" class="error" role="alert"></p></div><button type="submit" class="primary">保存设置</button></div>
     </form>${usageSection()}`;
 }

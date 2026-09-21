@@ -323,13 +323,14 @@ class Providers:
                 model_id = item.get("id") or item.get("model") or item.get("name", "").removeprefix("models/")
                 if model_id:
                     entry = {"id": model_id}
-                    for source, dest in (("displayName", "name"), ("name", "name"), ("context_length", "context"), ("inputTokenLimit", "context"), ("outputTokenLimit", "max_output")):
+                    for source, dest in (("displayName", "name"), ("name", "name"), ("context", "context"), ("context_length", "context"), ("inputTokenLimit", "context"), ("max_output", "max_output"), ("maxOutput", "max_output"), ("outputTokenLimit", "max_output")):
                         if source in item and not str(item[source]).startswith("models/"):
                             entry.setdefault(dest, item[source])
                     modalities = item.get("architecture", {}).get("input_modalities") or item.get("inputModalities")
                     if modalities:
-                        entry["image"] = "image" in modalities
-                    for field in ("image", "reasoning"):
+                        for field in ("image", "video", "audio"):
+                            entry[field] = field in modalities
+                    for field in ("image", "video", "audio", "reasoning", "xhigh", "max"):
                         if type(item.get(field)) is bool:
                             entry[field] = item[field]
                     models.append(entry)
@@ -677,6 +678,12 @@ class Providers:
                 binding["connection_id"], conn
             ):
                 raise WorkflowError("AUTH_REQUIRED", "请配置自定义 API 凭据", 422)
+        registered = next((m for m in conn.get("models", []) if m["id"] == model_id), {})
+        effort = binding.get("reasoning_effort", "medium")
+        if registered.get("reasoning") is not False and effort in ("xhigh", "max") and registered.get(effort) is False:
+            raise WorkflowError("EFFORT_UNSUPPORTED", "模型注册信息不支持所选思考强度", 422)
+        if require_image and registered.get("image") is False:
+            raise WorkflowError("CAPABILITY_UNSUPPORTED", "所选模型标记为不支持图像，请选择视觉模型", 422)
         return dict(binding, model_id=model_id), conn
 
     def _request_metadata(self, run, role, purpose, prompt, schema, images):

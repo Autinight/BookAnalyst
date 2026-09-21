@@ -1,0 +1,21 @@
+body.pdf-preview-open .workspace { margin-right: var(--pdf-preview-width); }
+.pdf-preview { position: fixed; z-index: 30; top: 0; right: 0; bottom: 0; width: var(--pdf-preview-width, 48vw); display: flex; flex-direction: column; background: #fbfaf6; border-left: 1px solid #dcded5; box-shadow: -8px 0 30px #22382a12; }
+.pdf-preview-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 15px 20px; border-bottom: 1px solid #e2e5dd; }
+.pdf-preview-heading > div { min-width: 0; }
+#pdf-preview-kind { font-size: 11px; color: #798177; }
+#pdf-preview-title { font-size: 14px; line-height: 1.5; margin: 4px 0 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+[data-pdf-close] { flex-shrink: 0; width: 32px; height: 32px; padding: 0; border: 0; background: transparent; font-size: 23px; }
+.pdf-preview-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 8px 16px; border-bottom: 1px solid #e2e5dd; font-size: 12px; }
+.pdf-preview-toolbar button { padding: 5px 9px; }
+.pdf-preview-toolbar label { display: flex; align-items: center; gap: 6px; margin: 0; }
+.pdf-preview-toolbar input { width: 58px; margin: 0; padding: 5px; }
+.pdf-preview-toolbar select { width: auto; margin: 0 0 0 auto; padding: 5px; }
+.pdf-preview-content { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; background: #e8e8e5; }
+.pdf-preview-sheet { width: var(--pdf-page-scale,100%); padding: 20px; }
+.pdf-preview-sheet img { display: block; width: 100%; max-width: none; height: auto; background: white; box-shadow: 0 2px 9px #0002; }
+#pdf-preview-message { margin: 20px 0; padding: 24px; color: #667469; text-align: center; }
+.pdf-preview-resize { position: absolute; z-index: 1; left: -4px; top: 0; bottom: 0; width: 8px; cursor: col-resize; touch-action: none; }
+.pdf-preview-resize:hover, .pdf-preview-resize:focus-visible { background: #285c4d30; }
+.pdf-preview-resizing { cursor: col-resize; user-select: none; }
+@media (max-width: 1100px) { body.pdf-preview-open .workspace { margin-right: 0; } }
+@media (max-width: 700px) { .pdf-preview { width: 100% !important; } .pdf-preview-resize { display: none; } }
