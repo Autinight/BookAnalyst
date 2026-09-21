@@ -4,7 +4,8 @@ export function coverPlaceholder(book) {
   return `<span class="cover-placeholder cover-tone-${book.title.length % 5}" aria-hidden="true"><strong>${e(book.title)}</strong></span>`;
 }
 function cover(book) {
-  return `<a class="shelf-cover${book.cover ? " has-cover" : ""}" href="/api/books/${e(book.id)}/source" data-pdf-preview="原书" data-pdf-title="${e(book.title)}" aria-label="打开 ${e(book.title)} 的原书 PDF">
+  const kind=book.result ? "保留的 PDF" : "原书 PDF";
+  return `<a class="shelf-cover${book.cover ? " has-cover" : ""}" href="/api/books/${e(book.id)}/pdf" data-pdf-preview="${kind}" data-pdf-title="${e(book.title)}" aria-label="打开 ${e(book.title)} 的${kind}">
     ${coverPlaceholder(book)}${book.cover ? `<img class="book-cover-image" loading="lazy" decoding="async" src="${e(book.cover.url)}" alt="${e(book.title)}封面">` : ""}</a>`;
 }
 function bookMenu(book, trash, supported) {

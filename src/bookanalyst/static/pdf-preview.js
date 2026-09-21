@@ -1,6 +1,7 @@
 import { api } from "./api.js";
 
-let panel, sheet, message, opener, controller, baseURL, page=1, pageCount=0, sequence=0, pageSequence=0;
+let panel, sheet, content, message, opener, controller, baseURL, observer, scrollFrame;
+let page=1, pageCount=0, sequence=0;
 const preferredWidth=()=>Math.min(620, Math.round(innerWidth*.44));
 
 function setWidth(width) {
@@ -16,9 +17,10 @@ function setWidth(width) {
 export function close(restoreFocus=true) {
   sequence++;
   controller?.abort();
+  observer?.disconnect();
+  cancelAnimationFrame(scrollFrame);
   if(!panel || panel.hidden) return;
   panel.hidden=true;
-  pageSequence++;
   sheet.replaceChildren();
   document.body.classList.remove("pdf-preview-open","pdf-preview-resizing");
   if(restoreFocus) (opener?.isConnected ? opener : document.querySelector("#main"))?.focus();
@@ -34,8 +36,11 @@ async function open(link) {
   const title=link.dataset.pdfTitle || "PDF";
   panel.querySelector("#pdf-preview-title").textContent=title;
   panel.querySelector("#pdf-preview-kind").textContent=link.dataset.pdfPreview;
-  pageSequence++;
+  observer?.disconnect();
+  cancelAnimationFrame(scrollFrame);
+  pageCount=0;
   sheet.replaceChildren();
+  content.scrollTo(0,0);
   sheet.style.setProperty("--pdf-page-scale","100%");
   panel.querySelector("#pdf-preview-zoom").value="100";
   panel.querySelector(".pdf-preview-toolbar").hidden=true;
@@ -57,6 +62,8 @@ async function open(link) {
     panel.querySelector("#pdf-preview-total").textContent=`/ ${pageCount}`;
     panel.querySelector("#pdf-preview-page-number").max=pageCount;
     panel.querySelector(".pdf-preview-toolbar").hidden=false;
+    buildPages(info.page_sizes);
+    message.hidden=true;
     showPage(1);
   } catch(error) {
     if(current!==sequence) return;
@@ -64,26 +71,89 @@ async function open(link) {
   }
 }
 
-function showPage(requested) {
-  const current=++pageSequence;
+function setPage(requested) {
   page=Math.max(1,Math.min(pageCount,Math.trunc(Number(requested)) || 1));
   panel.querySelector("#pdf-preview-page-number").value=page;
   panel.querySelector("[data-pdf-previous]").disabled=page===1;
   panel.querySelector("[data-pdf-next]").disabled=page===pageCount;
-  message.textContent="正在读取页面…";message.hidden=false;
-  sheet.replaceChildren();
+}
+
+function loadPage(slot) {
+  if(slot.querySelector("img")) return;
+  const number=Number(slot.dataset.page);
+  const status=document.createElement("div");
+  status.className="pdf-preview-page-status";
+  status.textContent=`正在读取第 ${number} 页…`;
   const image=new Image();
-  image.alt=`${panel.querySelector("#pdf-preview-title").textContent} · 第 ${page} 页`;
+  image.alt=`${panel.querySelector("#pdf-preview-title").textContent} · 第 ${number} 页`;
+  image.decoding="async";
   image.onload=()=>{
-    if(current!==pageSequence || panel.hidden) return;
-    sheet.replaceChildren(image);message.hidden=true;
-    panel.querySelector(".pdf-preview-content").scrollTo(0,0);
+    if(image.isConnected) status.remove();
   };
   image.onerror=()=>{
-    if(current!==pageSequence || panel.hidden) return;
-    message.textContent="此页读取失败，请重新选择页码或打开 PDF。";
+    if(!image.isConnected) return;
+    image.remove();
+    status.textContent=`第 ${number} 页读取失败`;
+    const retry=document.createElement("button");
+    retry.type="button";
+    retry.textContent="重试";
+    retry.addEventListener("click",()=>loadPage(slot));
+    status.append(retry);
   };
-  image.src=`${baseURL}/pages/${page}?dpi=150`;
+  slot.replaceChildren(image,status);
+  image.src=`${baseURL}/pages/${number}?dpi=150`;
+}
+
+function buildPages(sizes) {
+  // Reserve each page's real dimensions so loading images never shifts later pages.
+  const pages=sizes.map(([width,height],index)=>{
+    const slot=document.createElement("div");
+    slot.className="pdf-preview-page";
+    slot.dataset.page=index+1;
+    slot.style.aspectRatio=`${width} / ${height}`;
+    return slot;
+  });
+  sheet.replaceChildren(...pages);
+  observer=new IntersectionObserver(entries=>{
+    for(const {target,isIntersecting} of entries) {
+      if(!target.isConnected || panel.hidden) continue;
+      if(isIntersecting) loadPage(target);
+      else target.replaceChildren();
+    }
+  },{root:content,rootMargin:"100% 0px"});
+  pages.forEach(slot=>observer.observe(slot));
+}
+
+function showPage(requested) {
+  if(!pageCount) return;
+  setPage(requested);
+  const slot=sheet.children[page-1];
+  loadPage(slot);
+  content.scrollTo({top:slot.offsetTop,behavior:"instant"});
+}
+
+function syncPage() {
+  if(panel.hidden || !pageCount) return;
+  if(content.scrollTop>0 && content.scrollTop+content.clientHeight>=content.scrollHeight-1) {
+    setPage(pageCount);
+    return;
+  }
+  // Follow the page at the top of the reading area, including at page boundaries.
+  const position=content.scrollTop+1;
+  let low=0, high=pageCount-1;
+  while(low<high) {
+    const middle=Math.ceil((low+high)/2);
+    if(sheet.children[middle].offsetTop<=position) low=middle;
+    else high=middle-1;
+  }
+  if(low+1!==page) setPage(low+1);
+}
+
+function zoom(value) {
+  const slot=sheet.children[page-1];
+  const fraction=slot ? (content.scrollTop-slot.offsetTop)/slot.offsetHeight : 0;
+  sheet.style.setProperty("--pdf-page-scale",`${value}%`);
+  if(slot) content.scrollTo({top:slot.offsetTop+fraction*slot.offsetHeight,behavior:"instant"});
 }
 
 export function init() {
@@ -95,7 +165,12 @@ export function init() {
   </section>`);
   panel=document.querySelector("#pdf-preview");
   sheet=panel.querySelector(".pdf-preview-sheet");
+  content=panel.querySelector(".pdf-preview-content");
   message=panel.querySelector("#pdf-preview-message");
+  content.addEventListener("scroll",()=>{
+    cancelAnimationFrame(scrollFrame);
+    scrollFrame=requestAnimationFrame(syncPage);
+  },{passive:true});
   document.addEventListener("click",event=>{
     const link=event.target.closest("a[data-pdf-preview]");
     if(link) {event.preventDefault();void open(link);}
@@ -105,7 +180,7 @@ export function init() {
   });
   panel.addEventListener("change",event=>{
     if(event.target.id==="pdf-preview-page-number") showPage(event.target.value);
-    if(event.target.id==="pdf-preview-zoom") sheet.style.setProperty("--pdf-page-scale",`${event.target.value}%`);
+    if(event.target.id==="pdf-preview-zoom") zoom(event.target.value);
   });
   panel.addEventListener("keydown",event=>{
     if(event.key==="Enter" && event.target.id==="pdf-preview-page-number") {event.preventDefault();showPage(event.target.value);}

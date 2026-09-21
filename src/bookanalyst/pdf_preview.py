@@ -38,9 +38,10 @@ def register_pdf_preview_routes(app, store):
                 count = len(pdf)
                 if not count:
                     raise ValueError("Empty PDF")
+                page_sizes = [pdf.get_page_size(index) for index in range(count)]
         except Exception as exc:
             raise WorkflowError("INVALID_PDF", "无法预览此 PDF", 422) from exc
-        return {"title": title, "page_count": count}
+        return {"title": title, "page_count": count, "page_sizes": page_sizes}
 
     @app.get("/api/pdf-preview/{kind}/{key}/pages/{page}")
     def page_image(kind: PreviewKind, key: str, page: int, dpi: int = Query(150, ge=72, le=160)):

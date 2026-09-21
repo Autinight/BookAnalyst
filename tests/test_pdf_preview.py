@@ -2,6 +2,7 @@ from io import BytesIO
 
 from fastapi.testclient import TestClient
 from PIL import Image
+from pypdf import PdfWriter
 
 from bookanalyst.library_outputs import retain_run
 from test_library_outputs import completed
@@ -16,7 +17,9 @@ def test_preview_keeps_original_and_generated_documents_distinct(app):
         generated = client.get(f"/api/pdf-preview/book/{BOOK}")
         output = client.get(f"/api/pdf-preview/run/{run['id']}")
         assert original.json()["page_count"] == 45
+        assert len(original.json()["page_sizes"]) == 45
         assert generated.json()["page_count"] == output.json()["page_count"] == 1
+        assert generated.json()["page_sizes"] == output.json()["page_sizes"] == [[100, 100]]
         source_page = client.get(f"/api/pdf-preview/source/{BOOK}/pages/1?dpi=72")
         generated_page = client.get(f"/api/pdf-preview/book/{BOOK}/pages/1?dpi=72")
         assert source_page.status_code == generated_page.status_code == 200
@@ -37,3 +40,20 @@ def test_preview_rejects_missing_documents_and_invalid_pages(app, tmp_path):
         app.state.store.update_book(BOOK, path=str(tmp_path / "missing.pdf"))
         assert client.get(f"/api/pdf-preview/source/{BOOK}").status_code == 404
         assert client.get(f"/api/pdf-preview/source/{BOOK}/pages/1").status_code == 404
+
+
+def test_preview_dimensions_match_mixed_and_rotated_pages(app, tmp_path):
+    path = tmp_path / "mixed-pages.pdf"
+    writer = PdfWriter()
+    writer.add_blank_page(width=200, height=300)
+    writer.add_blank_page(width=200, height=300).rotate(90)
+    writer.add_blank_page(width=400, height=200)
+    writer.write(path)
+    app.state.store.update_book(BOOK, path=str(path))
+    with TestClient(app) as client:
+        info = client.get(f"/api/pdf-preview/source/{BOOK}").json()
+        assert info["page_sizes"] == [[200, 300], [300, 200], [400, 200]]
+        for page, size in enumerate(info["page_sizes"], start=1):
+            response = client.get(f"/api/pdf-preview/source/{BOOK}/pages/{page}?dpi=72")
+            with Image.open(BytesIO(response.content)) as image:
+                assert list(image.size) == size
