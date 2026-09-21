@@ -14,6 +14,29 @@ import httpx
 from .service import ServiceBusy, WorkspaceService, find_service, wait_for_service
 
 
+def style_titlebar(window):
+    """Match the Windows 11 caption to the workbench, keeping native controls."""
+    if os.name != "nt":
+        return
+    window.native.ShowIcon = False
+    window.native.Text = ""
+    if sys.getwindowsversion().build < 22000:
+        return
+    import ctypes
+    from ctypes import wintypes
+
+    set_attribute = ctypes.windll.dwmapi.DwmSetWindowAttribute
+    set_attribute.argtypes = [wintypes.HWND, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD]
+    set_attribute.restype = ctypes.c_long
+    handle = window.native.Handle.ToInt64()
+    # DWM takes COLORREF values in 0x00BBGGRR order.
+    for attribute, color in ((35, 0xF0F4F5), (36, 0x2E3222), (34, 0xDDE5E2)):
+        value = wintypes.DWORD(color)
+        result = set_attribute(handle, attribute, ctypes.byref(value), ctypes.sizeof(value))
+        if result:
+            logging.debug("Titlebar attribute %s unavailable: %s", attribute, result)
+
+
 def launch(workspace, port=8766):
     import webview
 
@@ -76,9 +99,11 @@ def launch(workspace, port=8766):
                 return True
 
             window.events.closing += on_closing
+            window.events.before_show += style_titlebar
             webview.start(
                 gui="edgechromium" if os.name == "nt" else None,
                 private_mode=False, storage_path=str(workspace / ".bookanalyst/desktop"),
+                icon=str(Path(__file__).parent / "static" / "bookanalyst.ico"),
             )
         finally:
             if service:

@@ -52,7 +52,7 @@ class Event:
 
 
 def fake_webview(monkeypatch, check):
-    window = SimpleNamespace(events=SimpleNamespace(closing=Event()))
+    window = SimpleNamespace(events=SimpleNamespace(closing=Event(), before_show=Event()))
     view = SimpleNamespace(settings={})
 
     def create_window(title, url, **kwargs):

@@ -1,6 +1,6 @@
 /* Cover-first library. Covers are separate assets, never source-page thumbnails. */
 body[data-route="library"] { background: #fbfaf6; }
-body[data-route="library"] header { background: #fbfaf6; border-color: #eeede5; }
+body[data-route="library"] header { background: #f5f4f0; border-color: #e2e5dd80; }
 body[data-route="library"] main { padding: 24px 48px 40px; }
 .bookshelf .page-head { margin-bottom: 20px; flex-direction: row; align-items: center; }
 .bookshelf .page-head h1 { font-family: Georgia, "Noto Serif SC", "SimSun", serif; font-size: 30px; line-height: 1.2; letter-spacing: 1px; color: #244832; margin: 0; }
