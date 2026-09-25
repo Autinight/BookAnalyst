@@ -105,7 +105,7 @@ export function runView(r, stages, liveConcurrency = false) {
   );
 }
 export function settings(s, stages, selectedProvider) {
-  return head("模型设置", "分别设置各阶段的模型、思考强度与连接。") +
+  return head("模型设置", "分别设置各阶段的模型、思考强度与连接，也可以把整套配置存成预设。") +
     `<form id="settings-form" novalidate>
       <div class="section-heading provider-section-heading"><h2>模型供应商</h2></div>
       ${connectionEditor(s, selectedProvider)}

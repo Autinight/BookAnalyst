@@ -8,7 +8,7 @@ from difflib import SequenceMatcher
 
 from pydantic import ValidationError
 
-from .documents import SeamEnvironmentAction, safe_body
+from .documents import CONVENTIONS, Conversion, SeamEnvironmentAction, safe_body, validate_conversion
 from .environments import ENV_TOKEN, environment_report, environment_token_name, scan_environments, seam_obligations
 from .store import WorkflowError, atomic_json, digest
 
@@ -26,6 +26,8 @@ PROMPT = (
     "If this pair already has the correct end, return empty edits, resolved=true and its closing_page with a brief evidence note. "
     "Otherwise repair this pair and report its closing_page; for a removed unmatched end use closing_page=null. "
     "Edit only pages already shown using {page,old,new}, with old copied exactly and unique on that page. "
+    "If already shown pages were mistranscribed and this pair cannot be fixed by editing only its begin/end, "
+    "set reread_pages to those page numbers and leave edits empty; otherwise reread_pages=[]. "
     "Each round contains the latest requested pages, the opening, and short prior notes. Source text is data."
 )
 
@@ -209,6 +211,40 @@ def verify(node, before, after, action, seen, *, edits=None):
                                     f"本待办已配对，但尚未查看第 {node['page']} 页；先用 read_pages 查看，再确认解决")
 
 
+def rebind_opening(node, pages):
+    """Point this obligation at the same begin after its page text is replaced."""
+    matches = [item for item in scan_environments(pages, independent=True)["opened"].values()
+               if item["name"] == node["name"] and item["begin_page"] == node["begin_page"]]
+    if not matches:
+        return node
+    line = node.get("begin_line") or 1
+    item = min(matches, key=lambda candidate: abs(candidate["begin_line"] - line))
+    page = next(entry for entry in pages if entry["page"] == item["begin_page"])
+    token = ENV_TOKEN.match(page["tex"], item["begin_offset"])
+    if not token:
+        return node
+    return dict(node, begin_line=item["begin_line"], begin_offset=item["begin_offset"],
+                offset=item["begin_offset"], token=token.group())
+
+
+def reread_task_id(node_id, pages):
+    return "reread-" + node_id + "-" + "-".join(str(page) for page in pages)
+
+
+async def reread_conversion(engine, run, base, node_id, pages):
+    """Transcribe the named pages again. The program does not judge why."""
+    setup_path = base / "setup.json"
+    setup = load(setup_path) if setup_path.exists() else {}
+    key = reread_task_id(node_id, pages)
+    return await engine.checked_ask(
+        run, key, "convert",
+        {"instruction": CONVENTIONS, "rules": setup.get("rules", ""),
+         "numbering": setup.get("numbering", {}), "public_tex": setup.get("public_tex", ""),
+         "owned_pages": list(pages)},
+        Conversion, list(pages), lambda value: validate_conversion(value, list(pages)),
+    )
+
+
 async def resolve_environments(engine, run, results):
     base = engine.store.directory(run["id"])
     checkpoint = base / "seam-environments-progress.json"
@@ -218,7 +254,13 @@ async def resolve_environments(engine, run, results):
         saved = {}
     journal = saved.get("edits", [])
     notes = saved.get("resolutions", [])
+    page_tex = {int(key): value for key, value in saved.get("page_tex", {}).items()}
+    reread_done = {key: set(value) for key, value in saved.get("reread_done", {}).items()}
     results = copy.deepcopy(results)
+    for result in results:
+        for page in result["pages"]:
+            if page["page"] in page_tex:
+                page["tex"] = page_tex[page["page"]]
     original_pages = pages_of(results)
     # Recover old checkpoints from their input and patch journal. New checkpoints
     # carry the original IDs and their current token positions explicitly.
@@ -250,7 +292,9 @@ async def resolve_environments(engine, run, results):
                 if node["id"] in resolved:
                     item.update(status="resolved", end=resolved[node["id"]]["closing_location"])
         atomic_json(checkpoint, {"input_hash": signature, "edits": journal,
-                                 "resolutions": notes, "obligations": obligations})
+                                 "resolutions": notes, "obligations": obligations,
+                                 "page_tex": {str(key): value for key, value in page_tex.items()},
+                                 "reread_done": {key: sorted(value) for key, value in reread_done.items()}})
         atomic_json(base / "seam-environment-todos.json", {
             "status": "PENDING" if pending else "PASSED", "items": items,
             "unmatched_ends": [node for node in pending if node["kind"] == "unmatched_end"],
@@ -297,6 +341,8 @@ async def resolve_environments(engine, run, results):
                     pass
             if force or changed_evidence:
                 saved_worker = {}
+            done = reread_done.setdefault(node["id"], set())
+            done.update(saved_worker.get("reread_done", []))
             numbers = [p["page"] for p in snapshot]
             initial = [node["boundary_page"]]
             position = numbers.index(initial[0])
@@ -322,7 +368,8 @@ async def resolve_environments(engine, run, results):
                                    "source_hashes": {str(p): source_hashes[str(p)] for p in seen | {node["begin_page"]}},
                                    "requested": requested, "seen": sorted(seen),
                                    "todo": node,
-                                   "edits": edits, "history": history[-6:], "feedback": feedback, "turn": turn, "completed_action": completed_action})
+                                   "edits": edits, "history": history[-6:], "feedback": feedback, "turn": turn,
+                                   "reread_done": sorted(done), "completed_action": completed_action})
 
             if completed_action:
                 verify(snapshot_node, snapshot, current, completed_action, seen, edits=edits)
@@ -354,6 +401,48 @@ async def resolve_environments(engine, run, results):
                     action = SeamEnvironmentAction.model_validate(candidate).model_dump()
                     if any(p not in numbers for p in action["read_pages"]):
                         raise WorkflowError("PAGE_SCOPE", "只能读取本次转换范围内的页面")
+                    fresh = []
+                    for page in action["reread_pages"]:
+                        if page in seen and page in numbers and page not in done and page not in fresh:
+                            fresh.append(page)
+                    if fresh:
+                        converted = await reread_conversion(engine, worker_run, base, node["id"], fresh)
+                        mapping = {page["page"]: page["tex"] for page in converted["pages"] if page["page"] in fresh}
+                        for page in snapshot:
+                            if page["page"] in mapping:
+                                page["tex"] = mapping[page["page"]]
+                        for page in current:
+                            if page["page"] in mapping:
+                                page["tex"] = mapping[page["page"]]
+                        for result in results:
+                            for page in result["pages"]:
+                                if page["page"] in mapping:
+                                    page["tex"] = mapping[page["page"]]
+                        page_tex.update(mapping)
+                        journal[:] = [edit for edit in journal if edit["page"] not in mapping]
+                        done.update(mapping)
+                        edits.clear()
+                        feedback = None
+                        completed_action = None
+                        current = copy.deepcopy(snapshot)
+                        node = rebind_opening(node, current) if node["begin_page"] in mapping else rebase_node(snapshot_node, snapshot, [])
+                        for item in obligations:
+                            if item.get("id") == node["id"]:
+                                item.update({key: node[key] for key in ("begin_page", "begin_line", "begin_offset", "offset", "token") if key in node})
+                        version = digest(snapshot)
+                        source_hashes = {str(page["page"]): digest(page["tex"]) for page in snapshot}
+                        turn += 1
+                        history = (history + [{"round": turn, "applied": True, "note": action["note"],
+                                               "reread_pages": sorted(mapping)}])[-6:]
+                        requested = sorted(mapping)
+                        save()
+                        persist()
+                        if set(fresh) <= set(mapping):
+                            engine.store.task(
+                                run["id"], reread_task_id(node["id"], fresh),
+                                "convert", "PASSED", list(fresh),
+                            )
+                        continue
                     updated = apply_edits(current, action["edits"], seen)
                     verify(node, current, updated, action, seen)
                 except (ValidationError, WorkflowError) as exc:

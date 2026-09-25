@@ -90,13 +90,19 @@ class SeamPageEdit(Result):
 class SeamEnvironmentAction(Result):
     edits: list[SeamPageEdit]
     read_pages: list[int] = Field(description="Pages to request NEXT, not pages already inspected. Must be [] when resolved=true.")
+    reread_pages: list[int] = Field(description="Already shown pages to transcribe again. [] unless this pair cannot be repaired by editing only its begin/end.")
     resolved: bool = Field(description="True when this environment pair is resolved; then read_pages must be [].")
     closing_page: int | None
     note: str = Field(min_length=1)
 
 
+class HeadingLevel(Result):
+    id: str
+    level: Literal["part", "chapter", "section", "subsection", "subsubsection"]
+
+
 class Headings(Result):
-    headings: list[Heading]
+    headings: list[HeadingLevel]
     appendix_start: str
 
 

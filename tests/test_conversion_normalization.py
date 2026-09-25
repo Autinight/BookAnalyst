@@ -22,7 +22,7 @@ def heading(identifier, page=1):
 
 def test_long_environment_note_survives_wire_schema_and_model_validation():
     note = "Explanation of the actual proof ending. " * 30
-    value = {"edits": [], "read_pages": [2], "resolved": False,
+    value = {"edits": [], "read_pages": [2], "reread_pages": [], "resolved": False,
              "closing_page": None, "note": note}
     parsed = parse_json(json.dumps(value), SeamEnvironmentAction.model_json_schema())
     assert SeamEnvironmentAction.model_validate(parsed).note == note

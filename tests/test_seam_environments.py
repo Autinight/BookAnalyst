@@ -19,7 +19,8 @@ def batches(*texts):
 
 
 def action(**kwargs):
-    return dict(edits=[], read_pages=[], resolved=False, closing_page=None, note="Continue this environment.") | kwargs
+    return dict(edits=[], read_pages=[], reread_pages=[], resolved=False, closing_page=None,
+                note="Continue this environment.") | kwargs
 
 
 def empty_patch():
@@ -665,3 +666,72 @@ async def test_pending_opener_keeps_id_after_prior_insertion_and_refreshes_on_co
     assert lemma_item["id"] == "env-1-2" and lemma_item["status"] == "resolved"
     assert await resolve_environments(engine, run, source) == joined
     assert len(calls) == (3 if conflict else 2)
+
+
+def converted_page(page, tex):
+    return {"pages": [{"page": page, "tex": tex}], "headings": [], "assets": [],
+            "head": "closed", "tail": "closed", "unclosed_environments": []}
+
+
+@pytest.mark.asyncio
+async def test_reread_replaces_shown_page_then_pairs(app, monkeypatch):
+    engine, run = app.state.engine, make_run(app)
+    source = batches(r"\begin{proof}Starts", "ends. \\\\end{proof}")
+    converts = []
+
+    async def generate(run, role, purpose, prompt, schema, images=()):
+        if purpose == "convert":
+            converts.append(json.loads(prompt)["owned_pages"])
+            return converted_page(2, r"ends.\end{proof}")
+        payload = json.loads(prompt)
+        if payload["tool_round"] == 0:
+            return action(reread_pages=[2], note="Page 2 was mistranscribed.")
+        assert r"\end{proof}" in payload["pages"][0]["tex"]
+        assert "\\\\end{proof}" not in payload["pages"][0]["tex"]
+        return action(resolved=True, closing_page=2, note="The reread page now closes the proof.")
+
+    monkeypatch.setattr(engine.providers, "generate", generate)
+    joined = await resolve_environments(engine, run, source)
+    assert converts == [[2]]
+    assert joined[1]["pages"][0]["tex"] == r"ends.\end{proof}"
+    assert not scan_environments([page for result in joined for page in result["pages"]])["unclosed"]
+    reread = [t for t in engine.store.tasks(run["id"], "convert") if t["id"].startswith("reread-")]
+    assert [(t["state"], t["pages"]) for t in reread] == [("PASSED", [2])]
+
+
+@pytest.mark.asyncio
+async def test_second_reread_of_a_page_is_ignored(app, monkeypatch):
+    engine, run = app.state.engine, make_run(app)
+    source = batches(r"\begin{proof}Starts", "ends. \\\\end{proof}")
+    converts = []
+
+    async def generate(run, role, purpose, prompt, schema, images=()):
+        if purpose == "convert":
+            converts.append(json.loads(prompt)["owned_pages"])
+            return converted_page(2, "ends here")
+        payload = json.loads(prompt)
+        if payload["tool_round"] == 0:
+            return action(reread_pages=[2, 9], note="Reread the broken page.")
+        return action(reread_pages=[2], resolved=True, closing_page=2, note="Close it directly this time.",
+                      edits=[{"page": 2, "old": "ends here", "new": r"ends here\end{proof}"}])
+
+    monkeypatch.setattr(engine.providers, "generate", generate)
+    joined = await resolve_environments(engine, run, source)
+    assert converts == [[2]]
+    assert joined[1]["pages"][0]["tex"] == r"ends here\end{proof}"
+
+
+@pytest.mark.asyncio
+async def test_reread_of_unseen_page_falls_through_to_the_edit(app, monkeypatch):
+    engine, run = app.state.engine, make_run(app)
+    source = batches(r"\begin{proof}Starts", "middle", "ends.")
+
+    async def generate(run, role, purpose, prompt, schema, images=()):
+        if purpose == "convert":
+            pytest.fail("A page that has not been shown is not reread")
+        return action(reread_pages=[3], resolved=True, closing_page=2, note="Close on the shown page.",
+                      edits=[{"page": 2, "old": "middle", "new": r"middle\end{proof}"}])
+
+    monkeypatch.setattr(engine.providers, "generate", generate)
+    joined = await resolve_environments(engine, run, source)
+    assert joined[1]["pages"][0]["tex"] == r"middle\end{proof}"

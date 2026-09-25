@@ -4,8 +4,9 @@ import copy
 import json
 
 import pytest
+from pydantic import ValidationError
 
-from bookanalyst.documents import Headings, References
+from bookanalyst.documents import HeadingLevel, Headings, References
 from bookanalyst.models import STAGES
 from bookanalyst.store import WorkflowError, atomic_json
 from test_numbering import batch, heading
@@ -47,12 +48,15 @@ async def test_reference_resume_reuses_finalized_headings(app, monkeypatch, lega
             assert not images and "targets" not in payload and "references_to_check" not in payload
             assert "repair_feedback" not in payload
             assert set(schema["properties"]) == {"headings", "appendix_start"}
-            heads = copy.deepcopy(payload["headings"])
+            heads = [{"id": h["id"], "level": h["level"]} for h in payload["headings"]]
             heads[1]["level"] = "subsection"
             return {"headings": heads, "appendix_start": ""}
         assert purpose == "references"
         assert set(schema["properties"]) == {"label_edits", "reference_edits", "unconfirmed_bibliography", "unconfirmed_references", "repair_requests", "search", "read_context", "view_pages"}
         assert payload["headings"][1]["level"] == "subsection"
+        assert payload["headings"][1]["page"] == 2
+        assert payload["headings"][1]["number"] == "1.1"
+        assert payload["headings"][1]["title"] == "Section title"
         target = next(t for t in payload["targets"] if t["page"] == 2)
         assert [h["id"] for h in target["scope"]] == ["b1-h", "b2-h"]
         if calls.count("references") == 1:
@@ -110,4 +114,52 @@ async def test_clean_references_skip_model_request(app, monkeypatch):
     resolved, index = await engine.references(run, results, [], {})
     assert resolved == results and index["references"][0]["key"] == "lemma:1"
     assert set(Headings.model_fields) == {"headings", "appendix_start"}
+    assert set(HeadingLevel.model_fields) == {"id", "level"}
     assert set(References.model_fields) == {"label_edits", "reference_edits", "unconfirmed_bibliography", "unconfirmed_references"}
+
+
+def test_heading_stage_rejects_source_fields():
+    Headings.model_validate({
+        "headings": [{"id": "batch-0059-exercises", "level": "subsection"}],
+        "appendix_start": "",
+    })
+    with pytest.raises(ValidationError):
+        Headings.model_validate({
+            "headings": [{
+                "id": "batch-0059-exercises",
+                "level": "subsection",
+                "page": 295,
+                "number": "",
+                "title": "EXERCISES",
+            }],
+            "appendix_start": "",
+        })
+
+
+def test_heading_coverage_names_the_first_rewritten_id(app):
+    original = [
+        {"id": "batch-0059-exercises", "page": 295, "level": "section", "number": "", "title": "EXERCISES"},
+        {"id": "batch-0064-exercises", "page": 318, "level": "section", "number": "", "title": "EXERCISES"},
+    ]
+    updated = [
+        {"id": "batch-0059-exercises-295", "level": "subsection"},
+        {"id": "batch-0064-exercises-318", "level": "section"},
+    ]
+    with pytest.raises(WorkflowError) as error:
+        app.state.engine.validate_headings(original, updated, "", {"documentclass": "book"})
+    assert error.value.code == "HEADING_COVERAGE"
+    assert error.value.message == (
+        "第 1 条 id 被改写：原为 batch-0059-exercises，收到 batch-0059-exercises-295。"
+    )
+
+
+def test_heading_coverage_names_a_missing_id(app):
+    original = [
+        {"id": "a", "page": 1, "level": "section", "number": "", "title": "A"},
+        {"id": "b", "page": 2, "level": "section", "number": "", "title": "B"},
+    ]
+    with pytest.raises(WorkflowError) as error:
+        app.state.engine.validate_headings(
+            original, [{"id": "a", "level": "chapter"}], "", {"documentclass": "book"},
+        )
+    assert error.value.message == "标题 id 数量对不上：原有 2 条，收到 1 条。第 2 条原 id 是 b。"

@@ -13,6 +13,7 @@ from pydantic import ValidationError
 
 DEFAULT_SETTINGS = {
     "stage_models": {},
+    "stage_presets": [],
     "llm_concurrency": 2,
     "image_repair_concurrency": 2,
     "default_connection": "openai_subscription",
@@ -96,6 +97,53 @@ def validate_url(url, allow_empty=False):
         raise WorkflowError("INVALID_URL", "服务根地址不能带查询参数或片段", 422)
 
 
+def validate_stage_presets(presets, connections):
+    if not isinstance(presets, list) or len(presets) > 30:
+        raise WorkflowError("INVALID_CONFIG", "预设最多保存 30 个", 422)
+    ids, names, cleaned = set(), set(), []
+    for item in presets:
+        if (
+            not isinstance(item, dict)
+            or set(item) != {"id", "name", "stage_models", "llm_concurrency", "image_repair_concurrency"}
+        ):
+            raise WorkflowError("INVALID_CONFIG", "预设字段无效", 422)
+        name = item["name"]
+        if not isinstance(name, str) or not name.strip() or len(name.strip()) > 60:
+            raise WorkflowError("INVALID_CONFIG", "预设名称须为 1–60 个字符", 422)
+        name = name.strip()
+        if name in names:
+            raise WorkflowError("INVALID_CONFIG", f"预设名称「{name}」重复", 422)
+        names.add(name)
+        preset_id = item["id"]
+        if not isinstance(preset_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", preset_id) or preset_id in ids:
+            raise WorkflowError("INVALID_CONFIG", "预设标识无效或重复", 422)
+        ids.add(preset_id)
+        if type(item["llm_concurrency"]) is not int or item["llm_concurrency"] < 1:
+            raise WorkflowError("INVALID_CONFIG", f"预设「{name}」的并行任务数必须为正整数", 422)
+        if type(item["image_repair_concurrency"]) is not int or item["image_repair_concurrency"] < 1:
+            raise WorkflowError("INVALID_CONFIG", f"预设「{name}」的图片修复并发必须为正整数", 422)
+        bindings = item["stage_models"]
+        if not isinstance(bindings, dict) or set(bindings) != set(MODEL_STAGES):
+            raise WorkflowError("INVALID_CONFIG", f"预设「{name}」的阶段配置不完整", 422)
+        stored = {}
+        for stage, binding in bindings.items():
+            try:
+                parsed = Binding.model_validate(binding).model_dump()
+            except ValidationError as exc:
+                raise WorkflowError("INVALID_CONFIG", f"预设「{name}」的模型配置无效", 422) from exc
+            if parsed["connection_id"] not in connections:
+                raise WorkflowError("INVALID_CONFIG", f"预设「{name}」引用了不存在的供应商", 422)
+            stored[stage] = parsed
+        cleaned.append({
+            "id": preset_id,
+            "name": name,
+            "stage_models": stored,
+            "llm_concurrency": item["llm_concurrency"],
+            "image_repair_concurrency": item["image_repair_concurrency"],
+        })
+    return cleaned
+
+
 def validate_settings(value):
     if set(value) != set(DEFAULT_SETTINGS):
         raise WorkflowError("INVALID_CONFIG", "配置字段不完整或包含未知字段", 422)
@@ -175,6 +223,7 @@ def validate_settings(value):
         if not conn or not conn.get("enabled"):
             raise WorkflowError("INVALID_CONFIG", f"{MODEL_STAGES[stage]}请选择已完成配置的供应商", 422)
         bindings[stage] = binding
+    value["stage_presets"] = validate_stage_presets(value["stage_presets"], value["connections"])
     return value
 
 
@@ -182,6 +231,8 @@ def prepare_settings(value, previous):
     """Validate everything before atomically saving settings and private credentials."""
     value = copy.deepcopy(value)
     value.setdefault("stage_models", settings_models(previous))
+    if "stage_presets" not in value:
+        value["stage_presets"] = copy.deepcopy(previous.get("stage_presets", []))
     value.setdefault("llm_concurrency", previous.get("llm_concurrency", 2))
     value.setdefault("image_repair_concurrency", previous.get("image_repair_concurrency", previous.get("llm_concurrency", 2)))
     if not value["stage_models"]:

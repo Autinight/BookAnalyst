@@ -1141,6 +1141,9 @@ class Providers:
                 "model": binding["model_id"],
                 "instructions": instruction,
                 "input": [{"role": "user", "content": content}],
+                # Responses uses text.format, not Chat Completions' response_format.
+                # Match that adapter's JSON mode; schema/content checks stay local.
+                "text": {"format": {"type": "json_object"}},
                 "stream": bool(conn.get("_stream")),
                 "store": False,
             }

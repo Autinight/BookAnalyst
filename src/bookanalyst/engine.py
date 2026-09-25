@@ -21,7 +21,6 @@ from .documents import (
     validate_conversion,
     apply_seam,
     render_document,
-    safe_tex,
     safe_public_tex,
     public_preamble,
 )
@@ -627,7 +626,8 @@ class Engine:
             "headings",
             {
                 "instruction": "Fix the document's heading hierarchy and appendix transition. "
-                "Return every supplied heading ID exactly once in original order; preserve page, number and title, changing only level. "
+                "Return one {id, level} for every supplied heading, in the same order. Copy each id exactly. Change only level. "
+                "Page, number and title stay with the program. "
                 "Use TOC, documentclass and source numbering as evidence. Set appendix_start to the first appendix heading ID "
                 "(empty string if none); the program inserts the native appendix transition there, so A/B etc "
                 "and their equations/theorems still count naturally. "
@@ -645,9 +645,16 @@ class Engine:
                 original, result["headings"], result["appendix_start"], setup
             ),
         )
+        merged = [
+            {**source, "level": patch["level"]}
+            for source, patch in zip(original, result["headings"], strict=True)
+        ]
         setup["appendix_start"] = result["appendix_start"]
-        atomic_json(self.store.directory(run["id"]) / "heading-edits.json", result)
-        return result["headings"]
+        atomic_json(
+            self.store.directory(run["id"]) / "heading-edits.json",
+            {"headings": merged, "appendix_start": result["appendix_start"]},
+        )
+        return merged
 
     async def references(self, run, results, headings, setup):
         base = self.store.directory(run["id"])
@@ -936,18 +943,27 @@ class Engine:
         return [completed[g["id"]] for g in groups]
 
     @staticmethod
-    def validate_headings(original, updated, appendix, setup, repair_titles=False):
-        if [h["id"] for h in updated] != [h["id"] for h in original]:
-            raise WorkflowError("HEADING_COVERAGE", "标题映射未完整覆盖原标题")
-        fields = (
-            ("id", "page", "number")
-            if repair_titles
-            else ("id", "page", "title", "number")
+    def heading_id_mismatch(expected, received):
+        limit = min(len(expected), len(received))
+        for index in range(limit):
+            if expected[index] != received[index]:
+                return f"第 {index + 1} 条 id 被改写：原为 {expected[index]}，收到 {received[index]}。"
+        if len(received) < len(expected):
+            return (
+                f"标题 id 数量对不上：原有 {len(expected)} 条，收到 {len(received)} 条。"
+                f"第 {len(received) + 1} 条原 id 是 {expected[len(received)]}。"
+            )
+        return (
+            f"标题 id 数量对不上：原有 {len(expected)} 条，收到 {len(received)} 条。"
+            f"第 {len(expected) + 1} 条多出的 id 是 {received[len(expected)]}。"
         )
-        if any(any(a[k] != b[k] for k in fields) for a, b in zip(original, updated)):
-            raise WorkflowError("HEADING_CONTENT", "标题处理不能改写来源页、编号和内容")
-        for h in updated:
-            safe_tex(h["title"])
+
+    @staticmethod
+    def validate_headings(original, updated, appendix, setup):
+        expected = [h["id"] for h in original]
+        received = [h["id"] for h in updated]
+        if expected != received:
+            raise WorkflowError("HEADING_COVERAGE", Engine.heading_id_mismatch(expected, received))
         if appendix and not any(
             h["id"] == appendix
             and h["level"]

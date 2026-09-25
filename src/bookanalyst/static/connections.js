@@ -95,10 +95,17 @@ export function refreshConnectionChoices(form,settings) {
 }
 let saveQueue=Promise.resolve();
 export const flushProviderSaves=()=>saveQueue;
+export function enqueueSettingsSave(mutate) {
+  const task = saveQueue.catch(() => {}).then(async () => {
+    const saved = await api("/api/settings");
+    return api("/api/settings", { method: "PUT", body: mutate(saved) });
+  });
+  saveQueue = task;
+  return task;
+}
 function saveConnection(id,conn) {
   const snapshot=structuredClone(conn);
-  const task=saveQueue.catch(()=>{}).then(async()=>{const saved=await api("/api/settings");saved.connections[id]=snapshot;await api("/api/settings",{method:"PUT",body:saved});});
-  saveQueue=task;return task;
+  return enqueueSettingsSave(saved => { saved.connections[id] = snapshot; return saved; });
 }
 function feedback(card,message,error=false) {
   const status=card.querySelector("[data-connection-status]");status.textContent=message;status.classList.toggle("error",error);

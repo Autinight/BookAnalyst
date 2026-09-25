@@ -141,6 +141,7 @@ def create_app(workspace=None, data_dir=None):
     def public_settings():
         value = store.get("settings", "main")
         value["stage_models"] = settings_models(value)
+        value.setdefault("stage_presets", [])
         value.setdefault("image_repair_concurrency", value.get("llm_concurrency", 2))
         for name, conn in value["connections"].items():
             conn.pop("max_in_flight", None)
@@ -209,6 +210,10 @@ def create_app(workspace=None, data_dir=None):
         for binding in value["stage_models"].values():
             if binding["connection_id"] == cid:
                 binding.update(connection_id=fallback, model_id="")
+        for preset in value.get("stage_presets", []):
+            for binding in preset["stage_models"].values():
+                if binding["connection_id"] == cid:
+                    binding.update(connection_id=fallback, model_id="")
         value, credentials = prepare_settings(value, store.get("settings", "main"))
         store.save_settings(value, credentials)
         return public_settings()

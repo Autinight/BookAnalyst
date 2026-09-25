@@ -78,6 +78,8 @@ async def test_protocols_use_model_metadata_and_images(app, tmp_path, protocol, 
             assert body["generationConfig"]["maxOutputTokens"] == 1234
             return httpx.Response(200, json={"candidates": [{"finishReason": "STOP", "content": {"parts": [{"text": "{}"}]}}]})
         if protocol == "responses":
+            assert body["text"] == {"format": {"type": "json_object"}}
+            assert "response_format" not in body
             assert "reasoning" not in body and body["max_output_tokens"] == 1234
             return httpx.Response(200, json={"status": "completed", "output": [{"type": "message", "content": [{"type": "output_text", "text": "{}"}]}]})
         assert "reasoning_effort" not in body and body["max_completion_tokens"] == 1234

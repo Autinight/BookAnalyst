@@ -8,7 +8,7 @@ import * as structureUI from "./tex-structure.js";
 import * as imageUI from "./image-repair.js";
 import * as libraryUI from "./library-ui.js";
 import * as pdfPreview from "./pdf-preview.js";
-import { loadStageModelChoices, readStageModels, stageConnectionChanged, stageModelChanged, refreshRegisteredModels } from "./stage-models.js";
+import { loadStageModelChoices, readStageModels, stageConnectionChanged, stageModelChanged, refreshRegisteredModels, stagePresetAction, syncStagePresetButtons } from "./stage-models.js";
 const $ = (s) => document.querySelector(s);
 let data,
   settings,
@@ -332,7 +332,7 @@ document.addEventListener("click", async (event) => {
     return;
   }
   const button = event.target.closest("button,a[data-nav]");
-  if (!button) return;
+  if (!button || button.closest(".stage-preset-dialog")) return;
   button.closest("[data-book-menu]")?.hidePopover();
   try {
     if (button.dataset.nav) event.preventDefault();
@@ -433,6 +433,12 @@ document.addEventListener("click", async (event) => {
       button.disabled = false;
       return;
     }
+    if (button.dataset.stagePresetAction) {
+      const next = await stagePresetAction(button, $("#settings-form"), settings, data.model_stages);
+      if (next?.settings) settings = next.settings;
+      if (next?.message) toast(next.message);
+      return;
+    }
     if (button.id === "add-provider") return addProvider($("#settings-form"), settings);
     if (button.hasAttribute("data-usage-refresh")) return loadUsage();
     if (button.dataset.providerSelect) return selectProvider($("#settings-form"), button.dataset.providerSelect);
@@ -476,6 +482,7 @@ document.addEventListener("change", async (event) => {
       filterLibrary();
     }
     if (event.target.name === "book_id" && event.target.closest("#run-form")) bookChanged();
+    if (event.target.hasAttribute("data-stage-preset")) syncStagePresetButtons(event.target.form);
     if (event.target.hasAttribute("data-stage-connection"))
       stageConnectionChanged(event.target, settings);
     if (event.target.hasAttribute("data-stage-model")) stageModelChanged(event.target, settings);

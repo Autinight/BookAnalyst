@@ -52,7 +52,7 @@ def test_settings_roundtrip_and_new_run_use_stage_models(app):
         assert result.json()['concurrency'] == 7
         for invalid in ['disabled-connection', 'effort', 'missing-stage']:
             bad = copy.deepcopy(saved)
-            if invalid == 'disabled-connection': bad['connections']['custom_api']['enabled'] = False
+            if invalid == 'disabled-connection': bad['connections']['custom_api']['base_url'] = ''
             elif invalid == 'effort': bad['stage_models']['finish']['reasoning_effort'] = 'invalid'
             else: bad['stage_models'].pop('convert')
             assert client.put('/api/settings', json=bad).status_code == 422
@@ -234,14 +234,14 @@ async def test_final_agent_routes_using_finish_binding_not_conversion_binding(ap
     if custom:
         configured['finish']['connection_id'] = 'custom_api'
         settings = store.get('settings', 'main')
-        settings['connections']['custom_api']['enabled'] = True
+        settings['connections']['custom_api'].update(enabled=True, base_url='http://localhost:9999')
         store.put('settings', 'main', settings)
     run['config']['stage_models'] = configured
     store.put('run', run['id'], run)
     async def resolve(binding, require_image=False): return dict(binding), {}
     monkeypatch.setattr(engine.providers, 'resolve', resolve)
     pi_calls = []
-    async def pi(providers, snapshot, project, feedback, instructions, binding=None):
+    async def pi(providers, snapshot, project, feedback, instructions, binding=None, purpose=None):
         pi_calls.append(binding)
     monkeypatch.setattr('bookanalyst.pi_compiler.repair_project', pi)
     await repair_project(engine.providers, run, project, {})
@@ -293,3 +293,93 @@ async def test_connection_default_is_frozen_until_explicit_refresh(app, monkeypa
     store.put('settings', 'main', settings)
     snapshot = await request_run(engine.providers, run['id'], 'convert')
     assert snapshot['config']['model']['model_id'] == 'upstream-default'
+
+
+def test_missing_stage_presets_are_visible_but_not_migrated_on_read(app):
+    store = app.state.store
+    legacy = store.get('settings', 'main')
+    legacy.pop('stage_presets', None)
+    store.put('settings', 'main', legacy)
+    with client_for(app) as client:
+        assert client.get('/api/settings').json()['stage_presets'] == []
+        assert 'stage_presets' not in store.get('settings', 'main')
+
+
+def test_stage_presets_are_saved_apart_from_the_active_configuration(app):
+    with client_for(app) as client:
+        settings = client.get('/api/settings').json()
+        assert settings['stage_presets'] == []
+        active = copy.deepcopy(settings['stage_models'])
+        settings['connections']['custom_api'].update(enabled=True, base_url='http://localhost:9999', auth_mode='none')
+        stored = {
+            'id': 'quality-preset',
+            'name': '  高质量  ',
+            'stage_models': bindings(),
+            'llm_concurrency': 3,
+            'image_repair_concurrency': 5,
+        }
+        stored['stage_models']['convert']['connection_id'] = 'custom_api'
+        settings['stage_presets'] = [stored]
+        saved = client.put('/api/settings', json=settings)
+        assert saved.status_code == 200
+        body = saved.json()
+        assert body['stage_models'] == active
+        expected = copy.deepcopy(stored)
+        expected['name'] = '高质量'
+        assert body['stage_presets'] == [expected]
+        omitted = copy.deepcopy(body)
+        omitted.pop('stage_presets')
+        omitted['stage_models']['setup']['model_id'] = 'separate-setup'
+        omitted['llm_concurrency'] = 9
+        kept = client.put('/api/settings', json=omitted)
+        assert kept.status_code == 200
+        assert kept.json()['stage_presets'] == [expected]
+        assert kept.json()['stage_models']['setup']['model_id'] == 'separate-setup'
+        assert kept.json()['llm_concurrency'] == 9
+        current = kept.json()
+
+        def blank(bad):
+            bad['stage_presets'][0]['name'] = ' '
+
+        def duplicate_name(bad):
+            bad['stage_presets'].append(dict(bad['stage_presets'][0], id='another-id'))
+
+        def duplicate_id(bad):
+            bad['stage_presets'].append(dict(bad['stage_presets'][0], name='另一套'))
+
+        def missing_stage(bad):
+            bad['stage_presets'][0]['stage_models'].pop('finish')
+
+        def bad_effort(bad):
+            bad['stage_presets'][0]['stage_models']['finish']['reasoning_effort'] = 'ultra'
+
+        def unknown_connection(bad):
+            bad['stage_presets'][0]['stage_models']['seams']['connection_id'] = 'missing'
+
+        def extra_field(bad):
+            bad['stage_presets'][0]['note'] = 'nope'
+
+        def bool_concurrency(bad):
+            bad['stage_presets'][0]['llm_concurrency'] = True
+
+        def bad_id(bad):
+            bad['stage_presets'][0]['id'] = 'has space'
+
+        for label, mutate in [
+            ('blank-name', blank), ('duplicate-name', duplicate_name), ('duplicate-id', duplicate_id),
+            ('missing-stage', missing_stage), ('bad-effort', bad_effort), ('unknown-connection', unknown_connection),
+            ('extra-field', extra_field), ('bool-concurrency', bool_concurrency), ('bad-id', bad_id),
+        ]:
+            bad = copy.deepcopy(current)
+            mutate(bad)
+            assert client.put('/api/settings', json=bad).status_code == 422, label
+            assert client.get('/api/settings').json()['stage_presets'] == current['stage_presets']
+        too_many = copy.deepcopy(current)
+        too_many['stage_presets'] = [dict(expected, id=f'preset-{index}', name=f'预设{index}') for index in range(31)]
+        assert client.put('/api/settings', json=too_many).status_code == 422
+        deleted = client.delete('/api/connections/custom_api')
+        assert deleted.status_code == 200
+        convert = deleted.json()['stage_presets'][0]['stage_models']['convert']
+        assert convert == {'connection_id': 'openai_subscription', 'model_id': '', 'reasoning_effort': expected['stage_models']['convert']['reasoning_effort']}
+        assert deleted.json()['stage_presets'][0]['stage_models']['setup'] == expected['stage_models']['setup']
+        assert client.get('/api/settings').json()['stage_presets'] == deleted.json()['stage_presets']
