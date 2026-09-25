@@ -204,7 +204,8 @@ def create_template_run(engine, bid, command):
         snapshot_files(template["files"], base / "template-example")
         atomic_json(base / "template.json", template)
         pages = list(range(config["start_page"], config["end_page"] + 1))
-        body = (project / "body.tex").read_text(encoding='utf-8')
+        from .project_body import read_project_body
+        body = read_project_body(project)
         rows = engine.project_pages({"body.tex": body}, pages, strict=False)
         atomic_json(base / "structured.json", [{"pages": rows, "headings": [], "assets": [], "head": "closed", "tail": "closed"}])
         atomic_json(base / "headings.json", [])

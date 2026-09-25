@@ -20,6 +20,7 @@ from .reference_review import review_records, review_response
 from .templates import register_template_routes
 from .library import register_library_routes
 from .image_repair import register_image_routes
+from .tex_structure import register_structure_routes
 from .library_outputs import output_directory, retained_directory, public_result
 from .model_config import MODEL_STAGES, settings_models
 from .provider_usage import usage_ledger
@@ -110,6 +111,7 @@ def create_app(workspace=None, data_dir=None):
     register_pdf_preview_routes(app, store)
     register_template_routes(app, store, engine)
     register_image_routes(app, store, engine)
+    register_structure_routes(app, store, engine)
 
     @app.get("/api/health")
     def health():
@@ -326,7 +328,8 @@ def create_app(workspace=None, data_dir=None):
             if not run["config"]["start_page"] <= page <= run["config"]["end_page"]:
                 raise WorkflowError("PAGE_SCOPE", "页面不属于本次运行", 422)
             project = store.directory(rid) / "tex"
-            body = (project / "body.tex").read_text(encoding="utf-8")
+            from .project_body import read_project_body
+            body = read_project_body(project)
             rows = engine.project_pages({"body.tex": body}, [page], strict=False)
             return next((p for p in rows if p["page"] == page), {"page": page, "tex": ""}) | {
                 "task": {"id": "finish-project", "state": run["state"]}, "final": run["state"] == "COMPLETED"}

@@ -4,6 +4,7 @@ import { loadUsage } from "./provider-usage.js";
 import { api, setToken, escape as e } from "./api.js";
 import * as views from "./views.js";
 import * as templateUI from "./templates.js";
+import * as structureUI from "./tex-structure.js";
 import * as imageUI from "./image-repair.js";
 import * as libraryUI from "./library-ui.js";
 import * as pdfPreview from "./pdf-preview.js";
@@ -39,6 +40,7 @@ async function navigate(target, id, fromHistory = false) {
   pdfPreview.close(false);
   libraryUI.leave();
   imageUI.leave();
+  structureUI.leave();
   const version = ++routeVersion;
   clearTimeout(pollTimer);
   contentController?.abort();
@@ -63,6 +65,7 @@ async function navigate(target, id, fromHistory = false) {
   $("#breadcrumb").textContent = {
     library: "书库",
     templates: "TeX 模板",
+    structure: "TeX 文件结构",
     images: "图片修复",
     runs: "运行记录",
     settings: "模型设置",
@@ -86,6 +89,7 @@ async function navigate(target, id, fromHistory = false) {
     const result = await api(`/api/runs/${id}/status`);
     if (version !== routeVersion) return;
     if (result.kind === "image_repair") return await navigate("images", id);
+    if (result.kind === "tex_structure") return await navigate("structure");
     run = result;
     page = run.pages[0];
     tasks = [];
@@ -100,6 +104,7 @@ async function navigate(target, id, fromHistory = false) {
     await bootstrap();
     if (version !== routeVersion) return;
     if (target === "images") return await imageUI.mount(data, id);
+    if (target === "structure") return await structureUI.mount(data);
     $("#main").innerHTML =
       target === "library" ? views.library(data, libraryState) : views.runs(data);
   }
@@ -470,7 +475,7 @@ document.addEventListener("change", async (event) => {
       libraryState.sort = event.target.value;
       filterLibrary();
     }
-    if (event.target.name === "book_id") bookChanged();
+    if (event.target.name === "book_id" && event.target.closest("#run-form")) bookChanged();
     if (event.target.hasAttribute("data-stage-connection"))
       stageConnectionChanged(event.target, settings);
     if (event.target.hasAttribute("data-stage-model")) stageModelChanged(event.target, settings);
@@ -650,7 +655,7 @@ document.addEventListener("keydown", event => {
 });
 function navigateLocation() {
   const [target, id] = location.hash.slice(1).split("/");
-  return navigate(["library", "images", "templates", "runs", "settings", "run"].includes(target) ? target : "library", id, true);
+  return navigate(["library", "images", "templates", "structure", "runs", "settings", "run"].includes(target) ? target : "library", id, true);
 }
 window.addEventListener("popstate", () => void navigateLocation());
 // Native hash links (the brand and skip link) do not use pushState.
@@ -658,6 +663,7 @@ window.addEventListener("hashchange", () => {
   if (location.hash === "#library" && route !== "library") void navigateLocation();
 });
 templateUI.init({ navigate, toast });
+structureUI.init({ navigate, toast, getData: () => data });
 pdfPreview.init();
 imageUI.init({ navigate, toast });
 libraryUI.init({ toast, refresh: async () => {

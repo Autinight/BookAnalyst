@@ -76,8 +76,11 @@ async def repair_project(providers, run, project, feedback, instructions, bindin
     prompt = (f"Current project: {project.resolve()}\n"
               f"Source PDF (read only): {run['source']['path']}\n"
               f"Compiler result: {json.dumps(feedback, ensure_ascii=False)}\n"
-              "Read the actual files as needed. Repair and compile until successful.")
-    prompt += compiler_reference_policy(project)
+              + ("Organize the project according to the instructions. The application validates and recompiles."
+                 if run.get("kind") == "tex_structure" else
+                 "Read the actual files as needed. Repair and compile until successful."))
+    if run.get("kind") != "tex_structure":
+        prompt += compiler_reference_policy(project)
     metadata = dict(agent="pi", purpose=purpose, phase="repair", role="model",
                     task_id="finish-project", model_id=binding["model_id"],
                     connection_id=binding["connection_id"], repair=True, attempt=1,

@@ -1020,11 +1020,12 @@ class Engine:
                 output = inspect_pdf(pdf)
                 files = {p.relative_to(project).as_posix(): p.read_text(encoding="utf-8")
                          for p in project.rglob("*.tex")}
-                pages = self.project_pages(files, source_pages, strict=False)
+                from .project_body import read_project_body
+                body = read_project_body(project) if run.get("kind") == "template" else files["body.tex"]
+                pages = self.project_pages({"body.tex": body}, source_pages, strict=False)
                 by_page = {p["page"]: p for p in pages}
                 for page in source_pages:
                     atomic_json(base / "final-pages" / f"{page}.json", by_page.get(page, {"page": page, "tex": ""}))
-                body = files["body.tex"]
                 atomic_json(project / "source_map.json", [
                     {"page": int(m[1]), "line": body[:m.start()].count("\n") + 1}
                     for m in re.finditer(r"(?m)^% PDF page (\d+)\r?$", body)
@@ -1136,7 +1137,7 @@ class Engine:
                 raise WorkflowError("SOURCE_CHANGED", "原始 PDF 已发生变化")
             if not run["config"].get("resolved") and not run["config"].get("stage_models") and not run.get("model_refresh_pending"):
                 binding, _ = await self.providers.resolve(
-                    run["config"]["model"], require_image=run.get("kind") != "template"
+                    run["config"]["model"], require_image=run.get("kind") not in ("template", "tex_structure")
                 )
                 self.store.change(
                     rid, lambda r: r["config"].update(model=binding, resolved=True)
@@ -1203,7 +1204,10 @@ class Engine:
                     atomic_json(base / "symbols.json", index)
                     atomic_json(base / "structured.json", resolved)
                 elif stage == "finish":
-                    if run.get("kind") == "image_repair":
+                    if run.get("kind") == "tex_structure":
+                        from .tex_structure import finish as finish_structure
+                        await finish_structure(self, run)
+                    elif run.get("kind") == "image_repair":
                         from .image_repair import repair_images
                         await repair_images(self, run)
                     else:

@@ -44,8 +44,13 @@ async def repair_project(providers, run, project, feedback):
     from openai_codex.api import AsyncTurnHandle
 
     special = run.get("kind") == "image_repair" and run.get("image_repair", {}).get("mode") == "special"
-    purpose = "image_repair" if special else "template_apply" if run.get("kind") == "template" else "compile_repair"
-    instructions = COMPILER_PROMPT + template_agent_instructions(run, project)
+    structuring = run.get("kind") == "tex_structure"
+    purpose = "compile_repair" if structuring else "image_repair" if special else "template_apply" if run.get("kind") == "template" else "compile_repair"
+    if structuring:
+        from .tex_structure import STRUCTURE_INSTRUCTIONS
+        instructions = STRUCTURE_INSTRUCTIONS
+    else:
+        instructions = COMPILER_PROMPT + template_agent_instructions(run, project)
     if special:
         from .image_special import special_instructions
         instructions += special_instructions(run, project)
@@ -102,8 +107,10 @@ async def repair_project(providers, run, project, feedback):
     prompt = (f"Current project: {project.resolve()}\n"
               f"Source PDF (read only): {run['source']['path']}\n"
               f"Compiler result: {json.dumps(feedback, ensure_ascii=False)}\n"
-              "Read the full main.log and project files for evidence. Repair and compile until successful.")
-    prompt += template_agent_instructions(run, project) + compiler_reference_policy(project)
+              + ("Organize the project according to the instructions. The application validates and recompiles."
+                 if structuring else "Read the full main.log and project files for evidence. Repair and compile until successful."))
+    if not structuring:
+        prompt += template_agent_instructions(run, project) + compiler_reference_policy(project)
     if special:
         prompt += special_instructions(run, project)
     metadata = dict(agent="codex", purpose=purpose, phase="repair", role="model",
