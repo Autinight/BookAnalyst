@@ -100,10 +100,11 @@ def launch(workspace, port=8766):
 
             window.events.closing += on_closing
             window.events.before_show += style_titlebar
+            icon_name = "bookanalyst-macos.icns" if sys.platform == "darwin" else "bookanalyst.ico"
             webview.start(
                 gui="edgechromium" if os.name == "nt" else None,
                 private_mode=False, storage_path=str(workspace / ".bookanalyst/desktop"),
-                icon=str(Path(__file__).parent / "static" / "bookanalyst.ico"),
+                icon=str(Path(__file__).parent / "static" / icon_name),
             )
         finally:
             if service:
